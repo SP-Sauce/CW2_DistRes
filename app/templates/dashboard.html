@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DistRes Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>DistRes v2 Dashboard</h1>
+      <p>Logged in as <strong>{{ username }}</strong> client node</p>
+    </div>
+    <form id="logout-form" method="post" action="/logout">
+      <input id="logout-session-id" type="hidden" name="session_id" value="{{ session_token }}">
+      <button class="secondary" type="submit">Logout</button>
+    </form>
+  </header>
+
+  <main class="grid">
+    <section class="panel">
+      <h2>1. Client-Server Coordination</h2>
+      <p>Active clients are tracked by the server-side SessionManager.</p>
+      <ul id="clients"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>2. Shared Distributed Resource</h2>
+      <p>ProductSpecification.txt is hosted server-side and protected by the ReadWriteCoordinator.</p>
+      <div class="button-row">
+        <button onclick="startRead()">Start read session</button>
+        <button onclick="finishRead()" class="secondary">Finish read</button>
+        <button onclick="requestWrite()">Request write access</button>
+        <button onclick="finishWrite()" class="secondary">Release write lock</button>
+      </div>
+      <p id="resource-message" class="status"></p>
+      <textarea id="file-content" placeholder="File content appears here after read or write access..."></textarea>
+      <div class="button-row">
+        <button onclick="saveWrite()">Save write update</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>3. Read/Write Lock State</h2>
+      <p><strong>Active readers:</strong> <span id="active-readers">[]</span></p>
+      <p><strong>Active writer:</strong> <span id="active-writer">None</span></p>
+      <p><strong>Waiting writers:</strong> <span id="waiting-writers">[]</span></p>
+    </section>
+
+    <section class="panel">
+      <h2>4. Publish-Subscribe Events</h2>
+      <p>Server pushes events to all clients using SSE.</p>
+      <pre id="events"></pre>
+    </section>
+
+    <section class="panel">
+      <h2>5. Fault Tolerance / Retry</h2>
+      <p>Logical primary/standby health state for Replit demonstration.</p>
+      <p><strong>Active server:</strong> <span id="active-server">PRIMARY</span></p>
+      <div class="button-row">
+        <button onclick="promoteStandby()">Promote standby</button>
+        <button onclick="restorePrimary()" class="secondary">Restore primary</button>
+      </div>
+      <p class="hint">The frontend wraps requests in retry logic and the event bus broadcasts failover changes.</p>
+    </section>
+  </main>
+
+<script>
+const username = {{ username | tojson }};
+const serverSessionToken = {{ session_token | tojson }};
+const eventBox = document.getElementById("events");
+
+if (serverSessionToken) {
+  sessionStorage.setItem("distres_session", serverSessionToken);
+}
+
+function sessionToken() {
+  return sessionStorage.getItem("distres_session") || serverSessionToken;
+}
+
+document.getElementById("logout-session-id").value = sessionToken();
+document.getElementById("logout-form").addEventListener("submit", () => {
+  document.getElementById("logout-session-id").value = sessionToken();
+  sessionStorage.removeItem("distres_session");
+});
+
+function addEventLine(text) {
+  const time = new Date().toLocaleTimeString();
+  eventBox.textContent = `[${time}] ${text}\n` + eventBox.textContent;
+}
+
+async function safeFetch(url, options = {}, attempts = 3) {
+  // CW2 fault tolerance: automatic retry for transient server/network failures.
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const requestOptions = {
+        ...options,
+        headers: new Headers(options.headers || {})
+      };
+      requestOptions.headers.set("X-DistRes-Session", sessionToken());
+      const response = await fetch(url, requestOptions);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } catch (err) {
+      addEventLine(`Request failed (${err.message}), retry ${i}/${attempts}`);
+      if (i === attempts) throw err;
+      await new Promise(resolve => setTimeout(resolve, 600 * i));
+    }
+  }
+}
+
+async function refreshState() {
+  const state = await safeFetch("/api/state", {method: "GET"});
+  renderState(state);
+}
+
+function renderState(state) {
+  document.getElementById("clients").innerHTML = state.sessions
+    .map(s => `<li>${s.username} <small>session ...${s.session_id_tail}</small></li>`)
+    .join("");
+
+  document.getElementById("active-readers").textContent =
+    JSON.stringify(state.resource.active_readers);
+  document.getElementById("active-writer").textContent =
+    state.resource.active_writer || "None";
+  document.getElementById("waiting-writers").textContent =
+    JSON.stringify(state.resource.waiting_writers);
+  document.getElementById("active-server").textContent =
+    state.health.active_server;
+}
+
+async function startRead() {
+  const data = await safeFetch("/api/read/start", {method: "POST"});
+  document.getElementById("resource-message").textContent = data.message;
+  if (data.content) document.getElementById("file-content").value = data.content;
+  renderState(data.state);
+}
+
+async function finishRead() {
+  const data = await safeFetch("/api/read/finish", {method: "POST"});
+  document.getElementById("resource-message").textContent = "Read session released.";
+  renderState(data.state);
+}
+
+async function requestWrite() {
+  const data = await safeFetch("/api/write/request", {method: "POST"});
+  document.getElementById("resource-message").textContent = data.message;
+  if (data.content) document.getElementById("file-content").value = data.content;
+  renderState(data.state);
+}
+
+async function saveWrite() {
+  const form = new FormData();
+  form.append("content", document.getElementById("file-content").value);
+  const data = await safeFetch("/api/write/save", {method: "POST", body: form});
+  document.getElementById("resource-message").textContent = data.message;
+  renderState(data.state);
+}
+
+async function finishWrite() {
+  const data = await safeFetch("/api/write/finish", {method: "POST"});
+  document.getElementById("resource-message").textContent = "Write lock released.";
+  renderState(data.state);
+}
+
+async function promoteStandby() {
+  const data = await safeFetch("/api/failover/promote", {method: "POST"});
+  document.getElementById("active-server").textContent = data.active_server;
+}
+
+async function restorePrimary() {
+  const data = await safeFetch("/api/failover/restore", {method: "POST"});
+  document.getElementById("active-server").textContent = data.active_server;
+}
+
+// PubSub subscription. Every client receives the same server events.
+const source = new EventSource("/events");
+source.onmessage = (event) => addEventLine(event.data);
+["subscribed", "client_connected", "client_disconnected", "reader_active",
+ "reader_released", "writer_active", "file_updated", "writer_released",
+ "server_failover", "server_restored"].forEach(type => {
+  source.addEventListener(type, (event) => {
+    const body = JSON.parse(event.data);
+    addEventLine(`${body.type}: ${JSON.stringify(body.payload)}`);
+    refreshState();
+  });
+});
+
+refreshState();
+setInterval(refreshState, 5000);
+</script>
+</body>
+</html>

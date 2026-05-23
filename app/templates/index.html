@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DistRes v2 Login</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="login-card">
+    <h1>DistRes v2</h1>
+    <p class="subtitle">Distributed Resource Access and Synchronisation Engine</p>
+
+    <form method="post" action="/login">
+      <label>Username</label>
+      <select name="username" required>
+        <option>Ali</option>
+        <option>Omar</option>
+        <option>Uthman</option>
+        <option>Abu Bakr</option>
+        <option>Talha</option>
+        <option>Zaid</option>
+      </select>
+
+      <label>Password</label>
+      <input name="password" type="password" value="pass123" required>
+
+      <button type="submit">Connect as client node</button>
+    </form>
+
+    <p id="error" class="error"></p>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get("error");
+    if (error) document.getElementById("error").textContent = error;
+  </script>
+</body>
+</html>

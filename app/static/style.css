@@ -1,0 +1,94 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #f5f7fb;
+  color: #1f2937;
+}
+.login-card {
+  max-width: 520px;
+  margin: 7vh auto;
+  background: white;
+  padding: 32px;
+  border-radius: 18px;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.08);
+}
+.subtitle { color: #526071; }
+label { display: block; margin-top: 16px; font-weight: 700; }
+input, select, textarea {
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-size: 15px;
+}
+button {
+  border: 0;
+  background: #1d4ed8;
+  color: white;
+  border-radius: 10px;
+  padding: 11px 16px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-top: 16px;
+}
+button:hover { filter: brightness(0.95); }
+button.secondary { background: #475569; }
+.error { color: #b91c1c; font-weight: 700; }
+.hint {
+  margin-top: 18px;
+  padding: 12px;
+  background: #eff6ff;
+  border-left: 4px solid #1d4ed8;
+  border-radius: 8px;
+}
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: center;
+  padding: 20px 32px;
+  background: white;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+}
+.topbar h1 { margin: 0; }
+.topbar p { margin: 4px 0 0; }
+.grid {
+  padding: 28px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(320px, 1fr));
+  gap: 22px;
+}
+.panel {
+  background: white;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 8px 22px rgba(0,0,0,0.06);
+}
+.panel h2 { margin-top: 0; }
+.button-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.button-row button { margin-top: 8px; }
+textarea {
+  min-height: 180px;
+  font-family: Consolas, monospace;
+}
+.status {
+  min-height: 24px;
+  font-weight: 700;
+  color: #1d4ed8;
+}
+pre {
+  height: 220px;
+  overflow: auto;
+  background: #0f172a;
+  color: #dbeafe;
+  padding: 14px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+}
+small { color: #64748b; }
+@media (max-width: 850px) {
+  .grid { grid-template-columns: 1fr; padding: 16px; }
+  .topbar { flex-direction: column; align-items: flex-start; }
+}
