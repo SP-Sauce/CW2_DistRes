@@ -6,15 +6,11 @@ from .database import init_db
 from .routes import router
 
 
+# Builds the FastAPI server, mounts the UI assets, and prepares the data layer.
 def create_app() -> FastAPI:
-    """
-    Application factory.
-
-    Rubric link:
-    - Creates the server node used for client-server coordination.
-    - Mounts UI/static assets used for the demonstration screenshots.
-    - Initialises the data layer before accepting client nodes.
-    """
+    # - Creates the server node used for client-server coordination.
+    # - Mounts UI/static assets used for the demonstration screenshots.
+    # - Initialises the data layer before accepting client nodes.
     init_db()
 
     app = FastAPI(

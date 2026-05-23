@@ -3,30 +3,26 @@ from .replication_service import replication_service
 from .rw_lock import rw_coordinator
 
 
+# Logical service that controls read/write access to the shared product file.
 class ResourceAccessService:
-    
-    # Logical microservice: ResourceAccessService.
-
-    # Rubric/design link:
-    # - Provides client access to the distributed shared resource.
-    # - Uses the ReadWriteCoordinator before reading/writing ProductSpecification.txt.
-    # - Keeps file operations inside the data/resource layer instead of directly in routes.
-    
-
+    # Tries to grant read access and returns the current file content if allowed.
     def start_read(self, username: str) -> tuple[bool, str, str]:
         granted, message = rw_coordinator.start_read(username)
         if not granted:
             return False, message, ""
         return True, message, PRODUCT_FILE_PATH.read_text(encoding="utf-8")
 
+    # Releases a user's read lock after they finish viewing the shared file.
     def finish_read(self, username: str) -> None:
         rw_coordinator.finish_read(username)
 
+    # Tries to grant or queue write access and returns editable content if granted.
     def request_write(self, username: str) -> tuple[str, str, str]:
         status, message = rw_coordinator.request_write(username)
         content = PRODUCT_FILE_PATH.read_text(encoding="utf-8") if status in {"GRANTED", "ACTIVE"} else ""
         return status, message, content
 
+    # Writes new content only if the user currently owns the write lock.
     def save_write(self, username: str, new_content: str) -> tuple[bool, str]:
         lock_state = rw_coordinator.status()
         if lock_state["active_writer"] != username:
@@ -36,9 +32,11 @@ class ResourceAccessService:
         replication_service.snapshot()
         return True, "File updated and replicated to backup snapshot."
 
+    # Releases a user's write lock so the next queued writer can continue.
     def finish_write(self, username: str) -> bool:
         return rw_coordinator.finish_write(username)
 
+    # Returns the current read/write lock state for the dashboard.
     def status(self) -> dict:
         return rw_coordinator.status()
 

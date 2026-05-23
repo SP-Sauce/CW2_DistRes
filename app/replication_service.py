@@ -1,20 +1,12 @@
 import shutil
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .config import BACKUP_DIR, DB_PATH, PRODUCT_FILE_PATH
 
 
+# Logical replication service that keeps backup snapshots of server-side data.
 class ReplicationService:
-    
-    # Logical microservice: Replication / Sync Service.
-
-    # Rubric/design link:
-    # - Mirrors the diagram's backup data store using simple file snapshots.
-    # - Keeps a replica of the DB and ProductSpecification file after updates.
-    # - Demonstrates the reliability/fault-tolerance idea without needing paid cloud infra.
-    
-
+    # Copies the database and product specification file into the backup store.
     def snapshot(self) -> dict:
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         db_backup = BACKUP_DIR / "users.db.snapshot"

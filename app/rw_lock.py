@@ -3,22 +3,16 @@ from collections import deque
 from typing import Deque, Optional, Set
 
 
+# Coordinates access so many readers or one writer can use the shared file safely.
 class ReadWriteCoordinator:
-    
-    # Logical microservice: ReadWriteCoordinator.
-
-    # Rubric/design link:
-    # - Multiple client nodes can read concurrently.
-    # - Only one client node can write at a time.
-    # - New readers are blocked when a writer is waiting, preventing writer starvation.
-    # - All state changes are protected by a mutex to prevent race conditions.
-
+    # Creates lock state for active readers, one active writer, and queued writers.
     def __init__(self) -> None:
         self._mutex = threading.Lock()
         self._active_readers: Set[str] = set()
         self._active_writer: Optional[str] = None
         self._waiting_writers: Deque[str] = deque()
 
+    # Grants a read lock when no writer is active and no writer is waiting.
     def start_read(self, username: str) -> tuple[bool, str]:
         with self._mutex:
             if self._active_writer:
@@ -28,18 +22,18 @@ class ReadWriteCoordinator:
             self._active_readers.add(username)
             return True, "Read lock granted. Multiple clients may read concurrently."
 
+    # Releases a reader and promotes a waiting writer if the file is now free.
     def finish_read(self, username: str) -> None:
         with self._mutex:
             self._active_readers.discard(username)
             self._promote_next_writer_if_possible_locked()
 
+    # Grants the write lock immediately or places the user into the FIFO writer queue.
     def request_write(self, username: str) -> tuple[str, str]:
-        
         # Returns:
         # - GRANTED if the user now owns the write lock.
         # - WAITING if the user has been queued.
         # - ACTIVE if the user already owns the write lock.
-        
         with self._mutex:
             if self._active_writer == username:
                 return "ACTIVE", "You already own the write lock."
@@ -58,6 +52,7 @@ class ReadWriteCoordinator:
             self._waiting_writers.append(username)
             return "WAITING", f"Write request queued. Queue position: {len(self._waiting_writers)}."
 
+    # Releases the active writer and promotes the next queued writer when possible.
     def finish_write(self, username: str) -> bool:
         with self._mutex:
             if self._active_writer != username:
@@ -66,6 +61,7 @@ class ReadWriteCoordinator:
             self._promote_next_writer_if_possible_locked()
             return True
 
+    # Removes all read/write ownership for a user who logs out or disconnects.
     def cancel_writer(self, username: str) -> None:
         with self._mutex:
             if self._active_writer == username:
@@ -74,6 +70,7 @@ class ReadWriteCoordinator:
             self._active_readers.discard(username)
             self._promote_next_writer_if_possible_locked()
 
+    # Returns the current lock state so the dashboard can display it.
     def status(self) -> dict:
         with self._mutex:
             return {
@@ -83,6 +80,7 @@ class ReadWriteCoordinator:
                 "read_count": len(self._active_readers),
             }
 
+    # Promotes the first queued writer only when no readers or writer are active.
     def _promote_next_writer_if_possible_locked(self) -> None:
         if not self._active_writer and not self._active_readers and self._waiting_writers:
             self._active_writer = self._waiting_writers.popleft()

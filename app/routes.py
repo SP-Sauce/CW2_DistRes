@@ -17,6 +17,7 @@ router = APIRouter()
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
+# Looks up the current session from a tab token first, then from the fallback cookie.
 def current_user(session_token: str | None, cookie_session: str | None = None):
     session = session_manager.get(session_token or cookie_session)
     if not session:
@@ -25,21 +26,17 @@ def current_user(session_token: str | None, cookie_session: str | None = None):
 
 
 @router.get("/", response_class=HTMLResponse)
+# Shows the login page used by each browser tab/client node.
 async def login_page(request: Request):
-    #Client node UI entry point
     return templates.TemplateResponse(request, "index.html")
 
 
 @router.post("/login")
+# Validates credentials, creates a client session, and redirects to the dashboard.
 async def login(username: str = Form(...), password: str = Form(...)):
-
-    # Client-server coordination endpoint.
-
-    # Rubric snippet candidate:
     # - HTTP request from client node to server node.
     # - AuthService checks SQLite.
     # - SessionManager records the active client node.
-
     if not auth_service.validate_user(username, password):
         return RedirectResponse("/?error=Invalid username or password", status_code=303)
 
@@ -55,6 +52,7 @@ async def login(username: str = Form(...), password: str = Form(...)):
 
 
 @router.post("/logout")
+# Ends a client session, releases any locks owned by that user, and returns to login.
 async def logout(
     session_id: str | None = Form(default=None),
     x_distres_session: str | None = Header(default=None),
@@ -74,6 +72,7 @@ async def logout(
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
+# Shows the dashboard for the session token belonging to this browser tab.
 async def dashboard(
     request: Request,
     session_id: str | None = Query(default=None),
@@ -91,17 +90,13 @@ async def dashboard(
 
 
 @router.get("/api/state")
+# Returns the shared system state used by the dashboard polling loop.
 async def state():
-
-    # Public state endpoint consumed by the UI polling loop.
-
-    # Kept simple because this is coursework demonstration code.
-    # The actual user check is done manually below to avoid putting Depends in this inline example.
-
     return JSONResponse(_state_payload())
 
 
 @router.get("/api/me")
+# Returns the username for the current authenticated client node.
 async def me(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
@@ -110,6 +105,7 @@ async def me(
     return {"username": session.username}
 
 
+# Builds one dictionary containing sessions, resource locks, and server health.
 def _state_payload() -> dict:
     return {
         "sessions": session_manager.active_users(),
@@ -119,6 +115,7 @@ def _state_payload() -> dict:
 
 
 @router.post("/api/read/start")
+# Requests a read lock and returns the file content when reading is allowed.
 async def start_read(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
@@ -130,6 +127,7 @@ async def start_read(
 
 
 @router.post("/api/read/finish")
+# Releases the current user's read lock and publishes the updated lock state.
 async def finish_read(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
@@ -141,18 +139,14 @@ async def finish_read(
 
 
 @router.post("/api/write/request")
+# Requests exclusive write access or queues the user behind active readers/writers.
 async def request_write(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-
-    # Client access to shared distributed resource.
-
-    # Rubric snippet candidate:
     # - The client requests write access from the server.
     # - Server either grants the writer role or queues the client.
     # - Pub-sub broadcasts writer status to every active client.
-
     session = current_user(x_distres_session, distres_session)
     status, message, content = resource_service.request_write(session.username)
     await event_bus.publish("writer_active", _state_payload())
@@ -160,6 +154,7 @@ async def request_write(
 
 
 @router.post("/api/write/save")
+# Saves edited file content when the current user owns the write lock.
 async def save_write(
     content: str = Form(...),
     x_distres_session: str | None = Header(default=None),
@@ -176,6 +171,7 @@ async def save_write(
 
 
 @router.post("/api/write/finish")
+# Releases the current user's write lock and publishes the updated lock state.
 async def finish_write(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
@@ -187,18 +183,15 @@ async def finish_write(
 
 
 @router.get("/events")
+# Opens the Server-Sent Events stream used for publish-subscribe notifications.
 async def events(request: Request):
-
-    # Publish-subscribe stream using Server-Sent Events.
-
-    # This behaves like a lightweight event broker for Replit:
     # - Browser subscribes once.
     # - Server pushes events after login/logout/read/write/failover.
     # - UI updates without manual refresh.
-    
     client_key = str(uuid.uuid4())
     queue = await event_bus.subscribe(client_key)
 
+    # Streams queued PubSub messages to one browser until it disconnects.
     async def event_generator():
         try:
             while True:
@@ -217,25 +210,23 @@ async def events(request: Request):
 
 
 @router.get("/api/health")
+# Returns active server health data for retry and failover UI checks.
 async def health():
-    """Health endpoint used by retry/reconnection logic."""
     return failover_controller.health()
 
 
 @router.post("/api/failover/promote")
+# Simulates primary failure by promoting the logical standby server.
 async def promote_standby():
-
-    # Demonstration endpoint for graceful failure handling.
-
     # In a single Replit instance this logically promotes the standby server node.
     # The UI's retry wrapper and event stream show how clients are notified.
-
     status = failover_controller.promote_standby()
     await event_bus.publish("server_failover", status)
     return status
 
 
 @router.post("/api/failover/restore")
+# Restores the logical primary server after a failover demonstration.
 async def restore_primary():
     status = failover_controller.restore_primary()
     await event_bus.publish("server_restored", status)
