@@ -2,6 +2,7 @@ from app import create_app
 from app.config import BASE_DIR
 
 # CW2 DistRes entry point.
+#http://127.0.0.1:8000/
 app = create_app()
 
 if __name__ == "__main__":
@@ -20,4 +21,4 @@ if __name__ == "__main__":
             app_dir=str(BASE_DIR),
         )
     else:
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        uvicorn.run(app, host="127.0.0.1", port=port)

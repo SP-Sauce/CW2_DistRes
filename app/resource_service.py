@@ -4,14 +4,14 @@ from .rw_lock import rw_coordinator
 
 
 class ResourceAccessService:
-    """
-    Logical microservice: ResourceAccessService.
+    
+    # Logical microservice: ResourceAccessService.
 
-    Rubric/design link:
-    - Provides client access to the distributed shared resource.
-    - Uses the ReadWriteCoordinator before reading/writing ProductSpecification.txt.
-    - Keeps file operations inside the data/resource layer instead of directly in routes.
-    """
+    # Rubric/design link:
+    # - Provides client access to the distributed shared resource.
+    # - Uses the ReadWriteCoordinator before reading/writing ProductSpecification.txt.
+    # - Keeps file operations inside the data/resource layer instead of directly in routes.
+    
 
     def start_read(self, username: str) -> tuple[bool, str, str]:
         granted, message = rw_coordinator.start_read(username)

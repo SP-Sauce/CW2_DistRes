@@ -4,15 +4,15 @@ from datetime import datetime, timezone
 
 
 class FailoverController:
-    """
-    Logical microservice: Health Monitor / Failover Controller.
+    
+    # Logical microservice: Health Monitor / Failover Controller.
 
-    Rubric/design link:
-    - Demonstrates distributed fault tolerance through health state, retry messaging
-      and standby promotion.
-    - In a one-Replit coursework prototype, primary/standby are logical nodes rather
-      than two paid/deployed physical servers.
-    """
+    # Rubric/design link:
+    # - Demonstrates distributed fault tolerance through health state, retry messaging
+    #   and standby promotion.
+    # - In a one-Replit coursework prototype, primary/standby are logical nodes rather
+    #   than two paid/deployed physical servers.
+    
 
     def __init__(self) -> None:
         self._lock = threading.Lock()

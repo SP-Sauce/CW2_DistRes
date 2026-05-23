@@ -6,14 +6,14 @@ from typing import Dict
 
 
 class EventBus:
-    """
-    Logical microservice: PubSub Broker / Event Bus.
+    
+    # Logical microservice: PubSub Broker / Event Bus.
 
-    Rubric/design link:
-    - Implements publish-subscribe notifications.
-    - Clients subscribe through Server-Sent Events (SSE).
-    - Server publishes file_updated, writer_active, reader_active and failover events.
-    """
+    # Rubric/design link:
+    # - Implements publish-subscribe notifications.
+    # - Clients subscribe through Server-Sent Events (SSE).
+    # - Server publishes file_updated, writer_active, reader_active and failover events.
+    
 
     def __init__(self) -> None:
         self._lock = threading.Lock()

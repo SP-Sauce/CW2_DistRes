@@ -6,14 +6,14 @@ from .config import BACKUP_DIR, DB_PATH, PRODUCT_FILE_PATH
 
 
 class ReplicationService:
-    """
-    Logical microservice: Replication / Sync Service.
+    
+    # Logical microservice: Replication / Sync Service.
 
-    Rubric/design link:
-    - Mirrors the diagram's backup data store using simple file snapshots.
-    - Keeps a replica of the DB and ProductSpecification file after updates.
-    - Demonstrates the reliability/fault-tolerance idea without needing paid cloud infra.
-    """
+    # Rubric/design link:
+    # - Mirrors the diagram's backup data store using simple file snapshots.
+    # - Keeps a replica of the DB and ProductSpecification file after updates.
+    # - Demonstrates the reliability/fault-tolerance idea without needing paid cloud infra.
+    
 
     def snapshot(self) -> dict:
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
