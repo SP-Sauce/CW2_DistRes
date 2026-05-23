@@ -2,7 +2,6 @@ from app import create_app
 from app.config import BASE_DIR
 
 # CW2 DistRes entry point.
-#http://127.0.0.1:8000/
 app = create_app()
 
 if __name__ == "__main__":

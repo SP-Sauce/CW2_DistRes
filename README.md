@@ -13,19 +13,7 @@ This is a Python/FastAPI implementation of the **Distributed Resource Access and
 - **Fault tolerance:** frontend retry logic plus logical primary/standby failover state.
 - **Replication:** writes create backup snapshots of the database and product file.
 
-## Replit run
-
-From the repository root, either click **Run** or use:
-
-```bash
-cd python-app
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Then open the web preview.
-
-## Local run
+## Run
 
 From `CW2/python-app`:
 

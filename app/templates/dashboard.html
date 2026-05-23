@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DistRes Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="dashboard-page">
   <header class="topbar">
     <div>
       <h1>DistRes v2 Dashboard</h1>
@@ -18,13 +19,13 @@
   </header>
 
   <main class="grid">
-    <section class="panel">
+    <section class="panel clients-panel">
       <h2>1. Client-Server Coordination</h2>
       <p>Active clients are tracked by the server-side SessionManager.</p>
       <ul id="clients"></ul>
     </section>
 
-    <section class="panel">
+    <section class="panel resource-panel">
       <h2>2. Shared Distributed Resource</h2>
       <p>ProductSpecification.txt is hosted server-side and protected by the ReadWriteCoordinator.</p>
       <div class="button-row">
@@ -40,20 +41,20 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel lock-panel">
       <h2>3. Read/Write Lock State</h2>
       <p><strong>Active readers:</strong> <span id="active-readers">[]</span></p>
       <p><strong>Active writer:</strong> <span id="active-writer">None</span></p>
       <p><strong>Waiting writers:</strong> <span id="waiting-writers">[]</span></p>
     </section>
 
-    <section class="panel">
+    <section class="panel events-panel">
       <h2>4. Publish-Subscribe Events</h2>
       <p>Server pushes events to all clients using SSE.</p>
       <pre id="events"></pre>
     </section>
 
-    <section class="panel">
+    <section class="panel failover-panel">
       <h2>5. Fault Tolerance / Retry</h2>
       <p>Logical primary/standby health state for Replit demonstration.</p>
       <p><strong>Active server:</strong> <span id="active-server">PRIMARY</span></p>
