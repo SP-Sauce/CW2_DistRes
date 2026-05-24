@@ -21,6 +21,13 @@ def init_db() -> None:
             "password TEXT NOT NULL"
             ")"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sessions ("
+            "session_id TEXT PRIMARY KEY, "
+            "username TEXT NOT NULL, "
+            "connected_at TEXT NOT NULL"
+            ")"
+        )
         for username, password in DEFAULT_USERS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO users(username, password) VALUES (?, ?)",

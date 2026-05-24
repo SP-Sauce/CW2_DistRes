@@ -56,13 +56,13 @@
 
     <section class="panel failover-panel">
       <h2>5. Fault Tolerance / Retry</h2>
-      <p>Logical primary/standby health state for Replit demonstration.</p>
+      <p>Gateway-managed primary/standby health state for the active server process.</p>
       <p><strong>Active server:</strong> <span id="active-server">PRIMARY</span></p>
       <div class="button-row">
-        <button onclick="promoteStandby()">Promote standby</button>
-        <button onclick="restorePrimary()" class="secondary">Restore primary</button>
+        <button onclick="refreshState()">Refresh health</button>
+        <button onclick="checkGateway()" class="secondary">Gateway status</button>
       </div>
-      <p class="hint">The frontend wraps requests in retry logic and the event bus broadcasts failover changes.</p>
+      <p class="hint">The frontend wraps requests in retry logic while the gateway switches traffic if the primary server stops responding.</p>
     </section>
   </main>
 
@@ -127,7 +127,9 @@ function renderState(state) {
   document.getElementById("waiting-writers").textContent =
     JSON.stringify(state.resource.waiting_writers);
   document.getElementById("active-server").textContent =
-    state.health.active_server;
+    state.health.node_id
+      ? `${state.health.node_id} (${state.health.active_role})`
+      : state.health.active_server;
 }
 
 async function startRead() {
@@ -164,14 +166,15 @@ async function finishWrite() {
   renderState(data.state);
 }
 
-async function promoteStandby() {
-  const data = await safeFetch("/api/failover/promote", {method: "POST"});
-  document.getElementById("active-server").textContent = data.active_server;
-}
-
-async function restorePrimary() {
-  const data = await safeFetch("/api/failover/restore", {method: "POST"});
-  document.getElementById("active-server").textContent = data.active_server;
+async function checkGateway() {
+  try {
+    const response = await fetch("/gateway/status");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    addEventLine(`gateway: active=${data.active_backend}, primary=${data.primary_health.ok}, standby=${data.standby_health.ok}`);
+  } catch (err) {
+    addEventLine(`Gateway status unavailable from this URL (${err.message})`);
+  }
 }
 
 // PubSub subscription. Every client receives the same server events.
@@ -179,7 +182,7 @@ const source = new EventSource("/events");
 source.onmessage = (event) => addEventLine(event.data);
 ["subscribed", "client_connected", "client_disconnected", "reader_active",
  "reader_released", "writer_active", "file_updated", "writer_released",
- "server_failover", "server_restored"].forEach(type => {
+ "server_failover", "server_restored", "gateway_failover"].forEach(type => {
   source.addEventListener(type, (event) => {
     const body = JSON.parse(event.data);
     addEventLine(`${body.type}: ${JSON.stringify(body.payload)}`);

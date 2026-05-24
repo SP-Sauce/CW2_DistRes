@@ -7,9 +7,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.templating import Jinja2Templates
 
 from .auth_service import auth_service
-from .config import TEMPLATES_DIR
+from .config import PRODUCT_FILE_PATH, TEMPLATES_DIR
 from .event_bus import event_bus
 from .failover import failover_controller
+from .replication_service import replication_service
 from .resource_service import resource_service
 from .session_manager import session_manager
 
@@ -25,6 +26,15 @@ def current_user(session_token: str | None, cookie_session: str | None = None):
     return session
 
 
+# Rejects normal client operations when this process is a passive standby.
+def ensure_active_node() -> None:
+    if not failover_controller.accepts_client_requests():
+        raise HTTPException(
+            status_code=503,
+            detail="This standby node is passive. Connect through the failover gateway.",
+        )
+
+
 @router.get("/", response_class=HTMLResponse)
 # Shows the login page used by each browser tab/client node.
 async def login_page(request: Request):
@@ -37,6 +47,12 @@ async def login(username: str = Form(...), password: str = Form(...)):
     # - HTTP request from client node to server node.
     # - AuthService checks SQLite.
     # - SessionManager records the active client node.
+    if not failover_controller.accepts_client_requests():
+        return RedirectResponse(
+            "/?error=This standby node is passive. Connect through the failover gateway.",
+            status_code=303,
+        )
+
     if not auth_service.validate_user(username, password):
         return RedirectResponse("/?error=Invalid username or password", status_code=303)
 
@@ -47,6 +63,7 @@ async def login(username: str = Form(...), password: str = Form(...)):
     query = urlencode({"session_id": session.session_id})
     response = RedirectResponse(f"/dashboard?{query}", status_code=303)
     response.set_cookie("distres_session", session.session_id, httponly=True, samesite="lax")
+    replication_service.replicate_state(sessions=session_manager.export_sessions())
     await event_bus.publish("client_connected", {"username": username})
     return response
 
@@ -58,12 +75,14 @@ async def logout(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     session_token = session_id or x_distres_session or distres_session
     username = session_manager.remove(session_token)
     if username:
         # Release any read/write locks owned by the logging-out user.
         resource_service.finish_read(username)
         resource_service.finish_write(username)
+        replication_service.replicate_state(sessions=session_manager.export_sessions())
         await event_bus.publish("client_disconnected", {"username": username})
 
     response = RedirectResponse("/", status_code=303)
@@ -78,6 +97,7 @@ async def dashboard(
     session_id: str | None = Query(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     session_token = session_id or distres_session
     session = session_manager.get(session_token)
     if not session:
@@ -101,6 +121,7 @@ async def me(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     return {"username": session.username}
 
@@ -120,6 +141,7 @@ async def start_read(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     granted, message, content = resource_service.start_read(session.username)
     await event_bus.publish("reader_active", _state_payload())
@@ -132,6 +154,7 @@ async def finish_read(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     resource_service.finish_read(session.username)
     await event_bus.publish("reader_released", _state_payload())
@@ -144,6 +167,7 @@ async def request_write(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     # - The client requests write access from the server.
     # - Server either grants the writer role or queues the client.
     # - Pub-sub broadcasts writer status to every active client.
@@ -160,6 +184,7 @@ async def save_write(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     ok, message = resource_service.save_write(session.username, content)
     if ok:
@@ -176,10 +201,48 @@ async def finish_write(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
+    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     ok = resource_service.finish_write(session.username)
     await event_bus.publish("writer_released", _state_payload())
     return {"ok": ok, "state": _state_payload()}
+
+
+@router.post("/internal/replicate/state")
+# Receives primary-to-standby replicated resource and session state.
+async def receive_replicated_state(request: Request):
+    payload = await request.json()
+
+    product_content = payload.get("product_content")
+    if product_content is not None:
+        PRODUCT_FILE_PATH.write_text(product_content, encoding="utf-8")
+
+    sessions = payload.get("sessions")
+    if sessions is not None:
+        session_manager.replace_sessions(sessions)
+
+    return {
+        "ok": True,
+        "node": failover_controller.health(),
+        "replicated_product": product_content is not None,
+        "replicated_sessions": sessions is not None,
+    }
+
+
+@router.post("/internal/promote")
+# Promotes a passive standby after the gateway detects primary failure.
+async def promote_internal():
+    status = failover_controller.promote_standby()
+    await event_bus.publish("server_failover", status)
+    return status
+
+
+@router.post("/internal/demote")
+# Returns a standby node to passive mode during a manual reset.
+async def demote_internal():
+    status = failover_controller.restore_primary()
+    await event_bus.publish("server_restored", status)
+    return status
 
 
 @router.get("/events")
@@ -216,10 +279,8 @@ async def health():
 
 
 @router.post("/api/failover/promote")
-# Simulates primary failure by promoting the logical standby server.
+# Manually promotes this node; the real demo normally does this through the gateway.
 async def promote_standby():
-    # In a single Replit instance this logically promotes the standby server node.
-    # The UI's retry wrapper and event stream show how clients are notified.
     status = failover_controller.promote_standby()
     await event_bus.publish("server_failover", status)
     return status
