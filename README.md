@@ -1,85 +1,38 @@
-# DistRes v2 - 6CM604 CW2 Python Implementation
+# DistRes v2 - Distributed Resource Access and Synchronisation Engine
 
-DistRes v2 is a Python/FastAPI implementation of the Distributed Resource Access and Synchronisation Engine. It demonstrates browser clients acting as distributed client nodes, server-hosted credentials and file resources, read/write synchronisation, publish-subscribe notifications, retry handling, and a real active-passive primary/standby failover demo.
+DistRes v2 is a Python/FastAPI coursework implementation of a distributed resource access system. Browser tabs act as client nodes, the FastAPI application acts as the server node, and a gateway process provides active-passive failover between a primary server and a standby server.
 
-## What It Demonstrates
+## Implemented Features
 
-- Client nodes: browser tabs log in as separate users.
-- Server-side data layer: SQLite `users.db` and `ProductSpecification.txt`.
-- Client-server coordination: FastAPI HTTP endpoints coordinate login, sessions, read, write, state, health and logout.
-- Shared resource access: multiple clients can read concurrently; only one writer can write at a time.
-- Publish-subscribe: Server-Sent Events broadcast server updates to all active clients.
-- Real failover: a gateway process forwards traffic to a primary server and promotes a standby server if the primary stops responding.
-- Replication: the active server pushes file/session state to the standby and keeps local backup snapshots.
+- Multiple browser clients can connect as separate users.
+- User credentials and active client sessions are stored server-side in SQLite.
+- The shared distributed resource is a server-hosted `ProductSpecification.txt` file.
+- Client-server coordination is handled through FastAPI HTTP endpoints.
+- Shared resource access is controlled by a read/write coordinator.
+- Multiple readers can access the shared file at the same time.
+- Only one writer can hold write access at a time.
+- Waiting writers are queued fairly so new readers do not starve writers.
+- Server-Sent Events provide publish-subscribe notifications to all connected clients.
+- The frontend includes retry handling for transient request failures.
+- A gateway forwards traffic to the active backend server.
+- A standby server can be promoted automatically when the primary server fails.
+- The primary server replicates file/session state to standby.
+- Backup snapshots of the database and shared file are kept in `data\backup`.
 
-## Install
+## How To Run
 
-From this project folder:
+Install dependencies from the `CW2_DistRes` folder:
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-No extra packages are required beyond `requirements.txt`.
-
-## Run: Single Server Mode
-
-This is useful for quick development, but the assessed failover demo should use the primary/standby/gateway setup below.
-
-```powershell
-$env:PORT = "8010"
-python main.py
-```
-
-Open:
-
-```text
-http://127.0.0.1:8010
-```
-
-## Run: Real Primary/Standby Failover Mode
-
-Use three separate PowerShell terminals, or run the batch launchers from the repository root:
+The recommended setup uses three separate terminals:
 
 ```text
 run_primary_server.bat
 run_standby_server.bat
 run_failover_gateway.bat
-```
-
-The batch files set the same environment variables shown below and start the matching Python wrapper in `app/Run_Servers`.
-
-Manual PowerShell equivalent:
-
-### Terminal 1 - Primary Server
-
-```powershell
-$env:DISTRES_NODE_ID = "primary"
-$env:DISTRES_ROLE = "primary"
-$env:DISTRES_DATA_DIR = "data"
-$env:DISTRES_REPLICATION_TARGET = "http://127.0.0.1:8002"
-$env:PORT = "8001"
-python main.py
-```
-
-### Terminal 2 - Standby Server
-
-```powershell
-$env:DISTRES_NODE_ID = "standby"
-$env:DISTRES_ROLE = "standby"
-$env:DISTRES_DATA_DIR = "data\standby"
-Remove-Item Env:DISTRES_REPLICATION_TARGET -ErrorAction SilentlyContinue
-$env:PORT = "8002"
-python main.py
-```
-
-### Terminal 3 - Failover Gateway
-
-```powershell
-$env:DISTRES_PRIMARY_URL = "http://127.0.0.1:8001"
-$env:DISTRES_STANDBY_URL = "http://127.0.0.1:8002"
-$env:PORT = "8000"
-python gateway.py
 ```
 
 Open the application through the gateway:
@@ -88,17 +41,66 @@ Open the application through the gateway:
 http://127.0.0.1:8000
 ```
 
-The browser should use the gateway URL only. The gateway health-checks the primary, forwards client requests to the active server, and promotes the standby if the primary fails.
+The browser should use the gateway URL, not the direct primary or standby URLs.
 
-## Demo Users
+## What The Batch Files Do
 
-All demo passwords are:
+`run_primary_server.bat` starts the primary FastAPI server on:
+
+```text
+http://127.0.0.1:8001
+```
+
+It calls `app\Run_Servers\Primary_Server_Run.py`, which sets:
+
+```text
+DISTRES_NODE_ID=primary
+DISTRES_ROLE=primary
+DISTRES_DATA_DIR=data
+DISTRES_REPLICATION_TARGET=http://127.0.0.1:8002
+PORT=8001
+```
+
+`run_standby_server.bat` starts the standby FastAPI server on:
+
+```text
+http://127.0.0.1:8002
+```
+
+It calls `app\Run_Servers\Standby_Server_Run.py`, which sets:
+
+```text
+DISTRES_NODE_ID=standby
+DISTRES_ROLE=standby
+DISTRES_DATA_DIR=data\standby
+PORT=8002
+```
+
+`run_failover_gateway.bat` starts the gateway on:
+
+```text
+http://127.0.0.1:8000
+```
+
+It calls `app\Run_Servers\Failover_Gateway_Run.py`, which sets:
+
+```text
+DISTRES_PRIMARY_URL=http://127.0.0.1:8001
+DISTRES_STANDBY_URL=http://127.0.0.1:8002
+PORT=8000
+```
+
+The gateway health-checks the primary and standby servers, forwards browser requests to the active backend, and promotes standby when the primary stops responding.
+
+## Login Users
+
+All seeded users use the password:
 
 ```text
 pass123
 ```
 
-Users:
+Available users:
 
 ```text
 Ali
@@ -109,119 +111,71 @@ Talha
 Zaid
 ```
 
-## System Demonstration Steps
+The users are seeded in `app/config.py` and inserted into SQLite by `app/database.py`.
 
-Use this as the main demonstration sequence for the rubric and scenario.
+## Project Structure
 
-### Setup
-
-1. Start the primary server, standby server, and gateway using the three-terminal setup.
-2. Open `http://127.0.0.1:8000` in two or more browser tabs.
-3. Keep the browser pointed at the gateway URL only. This proves the client nodes have one stable connection point while the gateway chooses the active backend.
-
-### Client Nodes - 4 Minutes
-
-1. Log in as different users, for example `Ali` and `Omar`.
-2. Show the `Client-Server Coordination` panel. Each browser tab is one client node, and the server-side session list proves that the server is managing connected clients.
-3. Click `Start read session` in both tabs. Show that both clients appear as active readers, which demonstrates concurrent access to the shared distributed resource.
-4. Click `Request write access` in one tab while another client is still reading. Show that the writer waits until readers finish.
-5. Click `Finish read` in the reading tab, then show the writer gaining exclusive access.
-6. Edit the file content and click `Save write update`. The save operation updates the server-hosted `ProductSpecification.txt`, creates a backup snapshot, and replicates the update to standby when the failover setup is running.
-
-### Server Nodes - 4 Minutes
-
-1. Click `Gateway status`. Show that the gateway sees both primary and standby health and that traffic is currently going to the primary.
-2. Show the active server value in the `Fault Tolerance / Retry` panel.
-3. Stop the primary server with `Ctrl+C` in Terminal 1.
-4. Continue using the same browser URL, `http://127.0.0.1:8000`.
-5. Click `Gateway status` again and show that the active backend is now `standby`.
-6. Save another write update. This proves the standby has been promoted and is now serving client requests.
-7. Mention that snapshots are stored in `data\backup`, while the standby replica is stored under `data\standby`.
-
-### Core Source Code - 2 Minutes
-
-1. Show client-server coordination in `app/routes.py`: login, session checking, read requests, write requests, and save requests.
-2. Show read/write synchronisation in `app/rw_lock.py`: many readers can hold the resource, but only one writer can own the write lock.
-3. Show publish-subscribe in `app/event_bus.py` and the browser `EventSource` subscription in `app/templates/dashboard.html`.
-4. Show failover support in `gateway.py`, `app/failover.py`, and `app/replication_service.py`.
-
-Note: the primary server uses the normal `data` folder, while the standby server keeps its replica in `data\standby`. Lock ownership is intentionally process-local. During failover, clients keep their replicated sessions, but active read/write locks are reset and clients request resource access again. This is appropriate for an active-passive coursework prototype; production systems usually use an external distributed lock service.
-
-## Demo Evidence Checklist
-
-Use this checklist during the system demonstration.
-
-- Two or more browser tabs are logged in as different users.
-- The dashboard lists active client nodes.
-- Two clients can read the shared file at the same time.
-- A writer is blocked or queued while another client is reading.
-- A writer gains exclusive access after readers finish.
-- Saving the file triggers a publish-subscribe event in the other tab.
-- `Gateway status` shows primary and standby health.
-- Stopping the primary causes the gateway to promote standby.
-- The UI continues working through `http://127.0.0.1:8000` after failover.
-- Backup snapshots exist in `data\backup`.
-
-## Implementation Report Presentation Plan
-
-The implementation report requires a maximum 10-minute demonstration. Use this structure.
-
-### Client Nodes - 4 Minutes
-
-- Client connection to server: login form in `app/templates/index.html:14`, login endpoint in `app/routes.py:47`, session creation in `app/session_manager.py:27`.
-- Client coordination with server: authenticated session lookup and request headers in `app/routes.py:22` and `app/templates/dashboard.html:93`.
-- Access to shared distributed resource: dashboard actions in `app/templates/dashboard.html:135`, `app/templates/dashboard.html:149`, and `app/templates/dashboard.html:156`; read/write endpoints in `app/routes.py:146`, `app/routes.py:172`, and `app/routes.py:188`.
-
-### Server Nodes - 4 Minutes
-
-- Server startup and app wiring: `main.py:5`, `app/__init__.py:10`, `app/__init__.py:22`, `app/__init__.py:23`.
-- Server-side data layer: SQLite/file setup in `app/database.py:20`, `app/database.py:26`, and server paths in `app/config.py:12`.
-- Managing client nodes: session persistence and active-client listing in `app/session_manager.py:21`, `app/session_manager.py:27`, and `app/session_manager.py:108`.
-- Publish-subscribe mechanism: subscriber registration in `app/event_bus.py:16`, broadcast in `app/event_bus.py:29`, SSE route in `app/routes.py:267`, and browser subscription in `app/templates/dashboard.html:182`.
-- Real primary/standby failover: gateway selection in `gateway.py:66`, standby promotion in `gateway.py:126`, gateway status in `gateway.py:270`, and node health state in `app/failover.py:8`.
-- Replication and snapshots: snapshot creation in `app/replication_service.py:14`, replication in `app/replication_service.py:31`, internal receiver in `app/routes.py:219`, and internal promotion in `app/routes.py:251`.
-
-### Core Source Code Explanation - 2 Minutes
-
-- Client-server coordination: `app/routes.py:47` for login, `app/routes.py:146` for reads, `app/routes.py:172` for write requests, `app/routes.py:188` for saving writes.
-- Synchronisation: `app/rw_lock.py:7`, `app/rw_lock.py:16`, `app/rw_lock.py:32`, and `app/rw_lock.py:66`.
-- Publish-subscribe: `app/event_bus.py:9`, `app/event_bus.py:16`, `app/event_bus.py:29`, SSE route in `app/routes.py:267`, browser subscription in `app/templates/dashboard.html:182`.
-- Fault tolerance: `gateway.py:66` chooses the backend, `gateway.py:126` promotes standby, and `app/replication_service.py:14` keeps local backup snapshots.
-
-## Rubric / Scenario Evidence Map
-
-Use this table when writing the report and when deciding which code to show during the presentation.
-
-| Required area to highlight | Evidence in this project |
+| Path | Purpose |
 | --- | --- |
-| Distributed node communication | Browser clients call FastAPI endpoints through HTTP: `app/routes.py:47`, `app/routes.py:146`, `app/routes.py:172`; gateway proxies to real servers: `gateway.py:239`. |
-| Client-server architecture | App creation and routing: `app/__init__.py:10`, `app/__init__.py:22`, `app/__init__.py:23`; server entry point: `main.py:5`. |
-| Each user acts as a client node | Login UI: `app/templates/index.html:14`; session creation: `app/session_manager.py:27`; active users: `app/session_manager.py:108`. |
-| Server hosts credential database | DB setup: `app/database.py:20`; credential table: `app/database.py:26`; authentication query: `app/auth_service.py:7`. |
-| Server hosts shared distributed file | Product file path: `app/config.py:13`; read file: `app/resource_service.py:9`; save file: `app/resource_service.py:26`. |
-| Layered architecture | UI templates in `app/templates`; API/controller layer in `app/routes.py`; logic services in `app/resource_service.py`, `app/session_manager.py`, `app/replication_service.py`; data layer in `app/database.py` and `app/config.py`. |
-| Concurrent reads | Read lock grant: `app/rw_lock.py:16`; active readers set: `app/rw_lock.py:11`; read endpoint: `app/routes.py:146`. |
-| Single writer | Write request logic: `app/rw_lock.py:32`; active writer field: `app/rw_lock.py:12`; save ownership check: `app/resource_service.py:27`. |
-| Race-condition prevention | Mutex-protected coordinator: `app/rw_lock.py:10`; guarded read/write methods: `app/rw_lock.py:16`, `app/rw_lock.py:32`, `app/rw_lock.py:66`. |
-| Publish-subscribe notifications | Event bus subscriber registry: `app/event_bus.py:16`; broadcast: `app/event_bus.py:29`; SSE formatting: `app/event_bus.py:37`; browser `EventSource`: `app/templates/dashboard.html:182`. |
-| Write update notifies clients | Save endpoint publishes `file_updated`: `app/routes.py:188`; browser listens for events: `app/templates/dashboard.html:182`. |
-| Fault tolerance and retries | Frontend retry wrapper: `app/templates/dashboard.html:93`; gateway health/status: `gateway.py:270`; backend selection and failover: `gateway.py:66`. |
-| Real primary/standby failover | Separate server processes with `DISTRES_NODE_ID` and `DISTRES_ROLE`: `app/config.py:17` and `app/config.py:18`; gateway promotion: `gateway.py:126`; standby internal promotion route: `app/routes.py:251`. |
-| Replication | Active server pushes state: `app/replication_service.py:31`; standby receives state: `app/routes.py:219`; SQLite sessions are replicated: `app/session_manager.py:127`, `app/session_manager.py:146`. |
-| Snapshot recovery evidence | Local backup copies are created in `app/replication_service.py:14`, `app/replication_service.py:20`, and `app/replication_service.py:22`; resulting files appear in `data\backup`. |
-| Client node demonstration | Use dashboard panels and actions in `app/templates/dashboard.html:23`, `app/templates/dashboard.html:29`, and `app/templates/dashboard.html:45`. |
-| Server node demonstration | Show health and failover panel in `app/templates/dashboard.html:58`; show server health route in `app/routes.py:294`; show gateway in `gateway.py:37`. |
-| Code snippet for client-server coordination | `app/routes.py:47`, `app/routes.py:146`, `app/routes.py:172`, `app/routes.py:188`. |
-| Code snippet for shared resource access | `app/resource_service.py:9`, `app/resource_service.py:20`, `app/resource_service.py:26`; lock logic in `app/rw_lock.py:16` and `app/rw_lock.py:32`. |
-| Code snippet for publish-subscribe | `app/event_bus.py:16`, `app/event_bus.py:29`, `app/routes.py:267`, `app/templates/dashboard.html:182`. |
-| User interface screenshots | Login page: `app/templates/index.html:10`; dashboard panels: `app/templates/dashboard.html:21`; dark liquid-glass styling: `app/static/style.css:100`. |
-| GitHub/source-code deliverable | Include this whole repository and confirm `requirements.txt`, `main.py`, `gateway.py`, `app/`, and `data/ProductSpecification.txt` are present. |
+| `main.py` | Starts the FastAPI application server. |
+| `gateway.py` | Runs the failover gateway and proxies requests to primary or standby. |
+| `run_primary_server.bat` | Windows launcher for the primary server. |
+| `run_standby_server.bat` | Windows launcher for the standby server. |
+| `run_failover_gateway.bat` | Windows launcher for the gateway. |
+| `app/__init__.py` | Creates the FastAPI app, mounts static assets, and registers routes. |
+| `app/routes.py` | Main HTTP API, dashboard routes, SSE endpoint, and internal replication/failover endpoints. |
+| `app/session_manager.py` | Tracks active client nodes and replicable session state. |
+| `app/rw_lock.py` | Implements the read/write coordination algorithm. |
+| `app/resource_service.py` | Reads/writes the shared file through the read/write lock. |
+| `app/event_bus.py` | Implements publish-subscribe using Server-Sent Events. |
+| `app/replication_service.py` | Creates snapshots and replicates state to standby. |
+| `app/failover.py` | Tracks whether a server process is active or passive. |
+| `app/database.py` | Creates SQLite tables and seeds default users. |
+| `app/auth_service.py` | Validates login credentials against SQLite. |
+| `app/config.py` | Defines paths, default users, node identity, role, and replication target. |
+| `app/templates/index.html` | Login page used by browser client nodes. |
+| `app/templates/dashboard.html` | Client dashboard for sessions, resource access, events, and failover state. |
+| `app/static/style.css` | Dashboard and login page styling. |
+| `data/users.db` | Primary server SQLite database. |
+| `data/ProductSpecification.txt` | Primary shared resource file. |
+| `data/standby` | Standby server replica data directory. |
+| `data/backup` | Local snapshot directory for recovery evidence. |
 
-## Presentation Talking Points
+## Rubric And Scenario Implementation Map
 
-- "DistRes uses HTTP as the distributed communication mechanism between browser client nodes and the server node."
-- "The gateway gives the browser one stable URL while it forwards traffic to the currently active backend."
-- "The primary writes to the normal server-side data folder, and the standby is a separate FastAPI process with its own replicated data folder."
-- "The primary replicates product-file and session state to the standby, so the standby can continue serving logged-in clients after failover."
-- "Read/write consistency is maintained by a mutex-protected read/write coordinator: multiple readers are allowed, but only one writer can own the write lock."
-- "Publish-subscribe is implemented with Server-Sent Events. Each client subscribes once and receives server events after login, logout, reads, writes, replication/failover and file updates."
+| Requirement | Where implemented | What to inspect |
+| --- | --- | --- |
+| Client nodes | `app/templates/index.html:14`, `app/templates/dashboard.html:23`, `app/session_manager.py:27` | Browser tabs log in as different users and become active client sessions. |
+| Client connection to server | `app/routes.py:47`, `app/auth_service.py:7`, `app/session_manager.py:27` | Login posts credentials to the server, validates them, then creates a server-side session. |
+| Client coordination with server | `app/routes.py:22`, `app/routes.py:116`, `app/templates/dashboard.html:93` | Each request includes the session token and the server updates session activity. |
+| Managing active client nodes | `app/session_manager.py:21`, `app/session_manager.py:71`, `app/session_manager.py:108` | SessionManager creates, refreshes, removes, and lists active clients. |
+| Server-hosted credentials | `app/config.py:23`, `app/database.py:20`, `app/database.py:26`, `app/auth_service.py:7` | Default users are seeded into the SQLite `users` table and checked on login. |
+| Server-hosted shared resource | `app/config.py:13`, `app/database.py:53`, `app/resource_service.py:9`, `app/resource_service.py:26` | `ProductSpecification.txt` is created and then read/written only through server-side code. |
+| Access to shared distributed resource | `app/routes.py:146`, `app/routes.py:159`, `app/routes.py:172`, `app/routes.py:188`, `app/routes.py:206` | API endpoints start/finish reads, request write access, save writes, and release write access. |
+| Concurrent reads | `app/rw_lock.py:16`, `app/resource_service.py:9`, `app/templates/dashboard.html:135` | `start_read` allows multiple active readers when no writer is active or waiting. |
+| Single writer access | `app/rw_lock.py:32`, `app/rw_lock.py:66`, `app/resource_service.py:26` | `request_write` grants one writer, queues others, and `save_write` checks write ownership. |
+| Race-condition prevention | `app/rw_lock.py:10`, `app/rw_lock.py:16`, `app/rw_lock.py:32`, `app/rw_lock.py:84` | A process-local mutex protects active reader, active writer, and waiting writer state. |
+| Client-server coordination API | `app/routes.py:47`, `app/routes.py:96`, `app/routes.py:116`, `app/routes.py:146`, `app/routes.py:172`, `app/routes.py:188` | Routes coordinate login, dashboard access, state polling, reads, writes, and saves. |
+| Publish-subscribe mechanism | `app/event_bus.py:9`, `app/event_bus.py:16`, `app/event_bus.py:29`, `app/event_bus.py:37` | EventBus stores subscriber queues and formats Server-Sent Events. |
+| SSE endpoint | `app/routes.py:267` | `/events` keeps a streaming connection open for each subscribed browser. |
+| Browser subscription to events | `app/templates/dashboard.html:182` | The dashboard uses `EventSource("/events")` and listens for server events. |
+| Events after client actions | `app/routes.py:63`, `app/routes.py:89`, `app/routes.py:153`, `app/routes.py:178`, `app/routes.py:192`, `app/routes.py:209` | Login, logout, read, write, save, and release operations publish events to all clients. |
+| Frontend retry handling | `app/templates/dashboard.html:93` | `safeFetch` retries failed HTTP requests before surfacing an error. |
+| Server node startup | `main.py:5`, `app/__init__.py:10`, `app/__init__.py:14`, `app/__init__.py:23` | The app is created, the database is initialised, and routes are registered. |
+| Primary/standby node identity | `app/config.py:17`, `app/config.py:18`, `app/failover.py:8` | Environment variables define whether the process is primary or standby. |
+| Passive standby protection | `app/failover.py:39`, `app/routes.py:29` | Client-facing operations reject direct access when the node is passive standby. |
+| Failover gateway | `gateway.py:37`, `gateway.py:66`, `gateway.py:239`, `gateway.py:334`, `gateway.py:340` | The gateway chooses the active backend and proxies normal browser requests. |
+| Gateway health/status | `gateway.py:48`, `gateway.py:116`, `gateway.py:270`, `app/templates/dashboard.html:170` | The gateway checks `/api/health` on primary/standby and exposes `/gateway/status`. |
+| Standby promotion | `gateway.py:126`, `app/routes.py:251`, `app/failover.py:24` | The gateway calls `/internal/promote`, and standby starts accepting client requests. |
+| Failback state sync | `gateway.py:140`, `gateway.py:276`, `app/routes.py:240`, `app/routes.py:259` | The gateway can export standby state, replicate it to primary, and demote standby. |
+| State replication to standby | `app/replication_service.py:31`, `app/routes.py:219`, `app/session_manager.py:127`, `app/session_manager.py:146` | File content and sessions are sent from primary to standby over an internal HTTP endpoint. |
+| Snapshot recovery evidence | `app/replication_service.py:14`, `app/replication_service.py:20`, `app/replication_service.py:22` | SQLite and text-file snapshots are copied into `data\backup`. |
+| Layered architecture | `app/templates`, `app/routes.py`, `app/resource_service.py`, `app/session_manager.py`, `app/database.py` | UI, controller/API, service logic, and data storage are separated by file responsibility. |
+
+## Extra Notes
+
+The implementation is an active-passive coursework prototype. The primary server uses `data`, while the standby server uses `data\standby`. Sessions and shared file content are replicated to standby, so connected users can continue after failover through the gateway.
+
+Read/write lock ownership is process-local. During failover, replicated sessions remain available, but active read/write locks are reset because the standby is a separate server process. Clients request read or write access again after promotion.
+
+The gateway URL, `http://127.0.0.1:8000`, is the intended client entry point for the full system. Direct primary and standby URLs are implementation endpoints used by the gateway and for inspection.
