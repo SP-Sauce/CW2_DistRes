@@ -17,6 +17,7 @@ BACKUP_DIR = DATA_DIR / "backup"
 NODE_ID = os.environ.get("DISTRES_NODE_ID", "local")
 NODE_ROLE = os.environ.get("DISTRES_ROLE", "primary").lower()
 REPLICATION_TARGET = os.environ.get("DISTRES_REPLICATION_TARGET", "").rstrip("/")
+SESSION_STALE_AFTER_SECONDS = int(os.environ.get("DISTRES_SESSION_STALE_AFTER_SECONDS", "60"))
 
 # The simple coursework credential set requested.
 DEFAULT_USERS = {

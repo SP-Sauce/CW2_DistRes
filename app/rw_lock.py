@@ -39,17 +39,27 @@ class ReadWriteCoordinator:
                 return "ACTIVE", "You already own the write lock."
 
             if username in self._waiting_writers:
+                self._active_readers.discard(username)
                 self._promote_next_writer_if_possible_locked()
                 if self._active_writer == username:
                     return "GRANTED", "Write lock granted."
                 position = list(self._waiting_writers).index(username) + 1
                 return "WAITING", f"Waiting for write lock. Queue position: {position}."
 
+            released_read = username in self._active_readers
+            if released_read:
+                self._active_readers.discard(username)
+                self._promote_next_writer_if_possible_locked()
+
             if not self._active_writer and not self._active_readers and not self._waiting_writers:
                 self._active_writer = username
+                if released_read:
+                    return "GRANTED", "Read session released and write lock granted. Only you can write now."
                 return "GRANTED", "Write lock granted. Only you can write now."
 
             self._waiting_writers.append(username)
+            if released_read:
+                return "WAITING", f"Read session released; write request queued. Queue position: {len(self._waiting_writers)}."
             return "WAITING", f"Write request queued. Queue position: {len(self._waiting_writers)}."
 
     # Releases the active writer and promotes the next queued writer when possible.

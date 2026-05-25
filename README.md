@@ -39,14 +39,24 @@ http://127.0.0.1:8010
 
 ## Run: Real Primary/Standby Failover Mode
 
-Use three separate PowerShell terminals.
+Use three separate PowerShell terminals, or run the batch launchers from the repository root:
+
+```text
+run_primary_server.bat
+run_standby_server.bat
+run_failover_gateway.bat
+```
+
+The batch files set the same environment variables shown below and start the matching Python wrapper in `app/Run_Servers`.
+
+Manual PowerShell equivalent:
 
 ### Terminal 1 - Primary Server
 
 ```powershell
 $env:DISTRES_NODE_ID = "primary"
 $env:DISTRES_ROLE = "primary"
-$env:DISTRES_DATA_DIR = "data\primary"
+$env:DISTRES_DATA_DIR = "data"
 $env:DISTRES_REPLICATION_TARGET = "http://127.0.0.1:8002"
 $env:PORT = "8001"
 python main.py
@@ -114,7 +124,7 @@ Zaid
 11. Click `Gateway status` again and show the gateway active backend is now `standby`.
 12. Save another update to prove the standby is now serving client traffic.
 
-Note: lock ownership is intentionally process-local. During failover, clients keep their replicated sessions, but active read/write locks are reset and clients request resource access again. This is appropriate for an active-passive coursework prototype; production systems usually use an external distributed lock service.
+Note: the primary server uses the normal `data` folder, while the standby server keeps its replica in `data\standby`. Lock ownership is intentionally process-local. During failover, clients keep their replicated sessions, but active read/write locks are reset and clients request resource access again. This is appropriate for an active-passive coursework prototype; production systems usually use an external distributed lock service.
 
 ## Implementation Report Presentation Plan
 
@@ -172,7 +182,7 @@ Use this table when writing the report and when deciding which code to show duri
 
 - "DistRes uses HTTP as the distributed communication mechanism between browser client nodes and the server node."
 - "The gateway gives the browser one stable URL while it forwards traffic to the currently active backend."
-- "The primary and standby are separate FastAPI processes with separate data folders."
+- "The primary writes to the normal server-side data folder, and the standby is a separate FastAPI process with its own replicated data folder."
 - "The primary replicates product-file and session state to the standby, so the standby can continue serving logged-in clients after failover."
 - "Read/write consistency is maintained by a mutex-protected read/write coordinator: multiple readers are allowed, but only one writer can own the write lock."
 - "Publish-subscribe is implemented with Server-Sent Events. Each client subscribes once and receives server events after login, logout, reads, writes, replication/failover and file updates."

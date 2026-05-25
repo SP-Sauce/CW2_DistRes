@@ -31,8 +31,8 @@ class ResourceAccessService:
         PRODUCT_FILE_PATH.write_text(new_content, encoding="utf-8")
         replication = replication_service.replicate_state(product_content=new_content)
         if replication["ok"]:
-            return True, "File updated and replicated to standby snapshot."
-        return True, "File updated locally; standby replication will need retry."
+            return True, "File updated and replicated to the standby replica."
+        return True, "File updated locally with a backup snapshot; standby replication will need retry."
 
     # Releases a user's write lock so the next queued writer can continue.
     def finish_write(self, username: str) -> bool:

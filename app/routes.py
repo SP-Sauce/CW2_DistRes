@@ -23,6 +23,7 @@ def current_user(session_token: str | None, cookie_session: str | None = None):
     session = session_manager.get(session_token or cookie_session)
     if not session:
         raise HTTPException(status_code=401, detail="Not logged in")
+    session_manager.touch(session.session_id)
     return session
 
 
@@ -102,6 +103,7 @@ async def dashboard(
     session = session_manager.get(session_token)
     if not session:
         return RedirectResponse("/", status_code=303)
+    session_manager.touch(session.session_id)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -111,7 +113,11 @@ async def dashboard(
 
 @router.get("/api/state")
 # Returns the shared system state used by the dashboard polling loop.
-async def state():
+async def state(
+    x_distres_session: str | None = Header(default=None),
+    distres_session: str | None = Cookie(default=None),
+):
+    session_manager.touch(x_distres_session or distres_session)
     return JSONResponse(_state_payload())
 
 
@@ -226,6 +232,17 @@ async def receive_replicated_state(request: Request):
         "node": failover_controller.health(),
         "replicated_product": product_content is not None,
         "replicated_sessions": sessions is not None,
+    }
+
+
+@router.get("/internal/export/state")
+# Exports full local state so the gateway can sync standby back to primary.
+async def export_replicated_state():
+    return {
+        "ok": True,
+        "node": failover_controller.health(),
+        "product_content": PRODUCT_FILE_PATH.read_text(encoding="utf-8"),
+        "sessions": session_manager.export_sessions(),
     }
 
 

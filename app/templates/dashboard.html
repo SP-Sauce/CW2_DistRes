@@ -135,20 +135,21 @@ function renderState(state) {
 async function startRead() {
   const data = await safeFetch("/api/read/start", {method: "POST"});
   document.getElementById("resource-message").textContent = data.message;
-  if (data.content) document.getElementById("file-content").value = data.content;
+  if (data.granted) document.getElementById("file-content").value = data.content;
   renderState(data.state);
 }
 
 async function finishRead() {
   const data = await safeFetch("/api/read/finish", {method: "POST"});
   document.getElementById("resource-message").textContent = "Read session released.";
+  document.getElementById("file-content").value = "";
   renderState(data.state);
 }
 
 async function requestWrite() {
   const data = await safeFetch("/api/write/request", {method: "POST"});
   document.getElementById("resource-message").textContent = data.message;
-  if (data.content) document.getElementById("file-content").value = data.content;
+  if (["GRANTED", "ACTIVE"].includes(data.status)) document.getElementById("file-content").value = data.content;
   renderState(data.state);
 }
 

@@ -68,15 +68,28 @@ class FailoverGateway:
             active_name = self._active_name
             active_url = self._active_url
 
-        if active_name == "standby" and self._is_healthy(active_url):
-            return active_name, active_url
+        if active_name == "standby":
+            standby_ok = self._is_healthy(active_url)
+            primary_ok = self._is_healthy(self.primary_url)
+            if primary_ok:
+                if standby_ok and not self._sync_state(self.standby_url, self.primary_url):
+                    return active_name, active_url
+                if standby_ok:
+                    self._demote_standby()
+                with self._lock:
+                    self._active_name = "primary"
+                    self._active_url = self.primary_url
+                    self._standby_promoted = False
+                    return self._active_name, self._active_url
+            if standby_ok:
+                return active_name, active_url
 
         if self._is_healthy(self.primary_url):
             with self._lock:
-                if not self._standby_promoted:
-                    self._active_name = "primary"
-                    self._active_url = self.primary_url
-                    return self._active_name, self._active_url
+                self._active_name = "primary"
+                self._active_url = self.primary_url
+                self._standby_promoted = False
+                return self._active_name, self._active_url
 
         if self._is_healthy(self.standby_url):
             self._promote_standby()
@@ -122,6 +135,45 @@ class FailoverGateway:
         )
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
             response.read()
+
+    # Copies full active state from one backend into another during manual failback.
+    def _sync_state(self, source_url: str, target_url: str) -> bool:
+        try:
+            with urllib.request.urlopen(
+                f"{source_url}/internal/export/state",
+                timeout=REQUEST_TIMEOUT,
+            ) as response:
+                body = response.read().decode("utf-8")
+            source_state = json.loads(body) if body else {}
+
+            payload = {
+                "product_content": source_state.get("product_content"),
+                "sessions": source_state.get("sessions", []),
+            }
+            request = urllib.request.Request(
+                f"{target_url}/internal/replicate/state",
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+                response.read()
+            return True
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return False
+
+    # Returns a promoted standby to passive mode after primary has been restored.
+    def _demote_standby(self) -> None:
+        request = urllib.request.Request(
+            f"{self.standby_url}/internal/demote",
+            data=b"",
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
+                response.read()
+        except (urllib.error.URLError, TimeoutError):
+            pass
 
 
 gateway = FailoverGateway(PRIMARY_URL, STANDBY_URL)
@@ -224,6 +276,13 @@ async def gateway_status():
 async def reset_primary():
     if not gateway._is_healthy(PRIMARY_URL):
         return JSONResponse({"detail": "Primary is not healthy."}, status_code=503)
+    if gateway._is_healthy(STANDBY_URL):
+        if not gateway._sync_state(STANDBY_URL, PRIMARY_URL):
+            return JSONResponse(
+                {"detail": "Could not sync standby state back to primary."},
+                status_code=502,
+            )
+        gateway._demote_standby()
     with gateway._lock:
         gateway._active_name = "primary"
         gateway._active_url = PRIMARY_URL
