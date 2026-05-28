@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title DistRes Model A Gateway
+title DistRes AA Gateway
 cd /d "%~dp0"
 set "PY_EXE="
 call :select_python
@@ -12,7 +12,7 @@ if not defined PY_EXE (
     exit /b 1
 )
 "%PY_EXE%" -c "import sys; print('Using Python: ' + sys.executable)"
-echo Starting DistRes Model A gateway on http://127.0.0.1:8000
+echo Starting DistRes AA gateway on http://127.0.0.1:8000
 echo Press Ctrl+C to stop.
 echo.
 "%PY_EXE%" "app\Run_Servers\Gateway_Run.py"

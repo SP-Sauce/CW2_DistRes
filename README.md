@@ -2,9 +2,7 @@
 
 DistRes v2 is a Python/FastAPI coursework implementation of a distributed resource access system. Browser tabs act as client nodes, three FastAPI processes act as DistRes server nodes, and a gateway provides load balancing, leader election, and write routing.
 
-## Model A Architecture: Active-Active Reads and Leader-Routed Writes
-
-Model A: active-active read scaling with leader-routed writes.
+## Architecture: Active-Active Reads and Leader-Routed Writes
 
 The system now runs three active DistRes server nodes behind an API Gateway / Load Balancer:
 
@@ -146,7 +144,7 @@ GET  /events
 | `app/resource_service.py` | Reads/writes `ProductSpecification.txt` through shared reader tracking and the DB lock. |
 | `app/distributed_lock.py` | SQLite-backed distributed write lock using `resource_locks`. |
 | `app/distributed_readers.py` | SQLite-backed active-reader tracking using `resource_readers`. |
-| `app/node_status.py` | Reports each server node's Model A health and identity. |
+| `app/node_status.py` | Reports each server node's health and identity. |
 | `app/event_bus.py` | Publish-subscribe notifications using Server-Sent Events. |
 | `app/database.py` | Creates SQLite tables, seeded users, sessions, `resource_readers`, `resource_locks`, and `resource_write_waiters`. |
 | `app/session_manager.py` | Tracks active browser/client sessions in SQLite. |
@@ -155,7 +153,7 @@ GET  /events
 | `run_node1_server.bat` | Windows launcher for node1. |
 | `run_node2_server.bat` | Windows launcher for node2. |
 | `run_node3_server.bat` | Windows launcher for node3. |
-| `run_gateway.bat` | Windows launcher for the Model A gateway. |
+| `run_gateway.bat` | Windows launcher for the gateway. |
 | `data\shared` | Shared local demo database and product file. |
 | `data\backup` | Backup snapshots. |
 
@@ -221,7 +219,7 @@ Demo 5 - Failure handling:
 
 ## Notes
 
-The distributed write lock is a final consistency guard. It does not mean every server should independently accept writes. In Model A, write requests must be routed through the gateway to the Bully-elected leader first, then checked by the DB-backed distributed lock.
+The distributed write lock is a final consistency guard. It does not mean every server should independently accept writes. Write requests must be routed through the gateway to the Bully-elected leader first, then checked by the DB-backed distributed lock.
 
 If a browser restart loses the local session token while SQLite still contains that user's old session, logging in again with the same username takes over the abandoned session. The old session, reader marker, writer wait entry, and owned write lock are cleared before the new session is created.
 

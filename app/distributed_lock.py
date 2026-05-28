@@ -11,7 +11,7 @@ RESOURCE_NAME = "ProductSpecification.txt"
 
 
 class DistributedWriteLock:
-    # SQLite-backed final guard for Model A leader-routed writes.
+    # SQLite-backed final guard for leader-routed writes.
     def __init__(self, resource_name: str = RESOURCE_NAME) -> None:
         self.resource_name = resource_name
         self.lease_seconds = DISTRIBUTED_LOCK_LEASE_SECONDS

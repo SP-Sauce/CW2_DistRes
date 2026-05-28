@@ -81,8 +81,8 @@ class BackendUnavailable(RuntimeError):
     pass
 
 
-class ModelAGateway:
-    # Model A: active-active read scaling with leader-routed writes.
+class AAGateway:
+    # AA: ctive-active read scaling with leader-routed writes.
     def __init__(self, cluster_nodes: list[dict]) -> None:
         self.cluster_nodes = cluster_nodes
         leader = max(cluster_nodes, key=lambda node: node["priority"])
@@ -107,7 +107,7 @@ class ModelAGateway:
 
         return {
             "gateway_mode": GATEWAY_MODE,
-            "model": "Model A: active-active read scaling with leader-routed writes.",
+            "model": "active-active read scaling with leader-routed writes.",
             "load_balancing_policy": "round-robin for safe/read requests",
             "write_routing_policy": "writes routed to Bully-elected leader",
             "leader_election_algorithm": LEADER_ELECTION_ALGORITHM,
@@ -274,10 +274,10 @@ class ModelAGateway:
         return election["winner"], election["winner_url"], policy
 
 
-gateway = ModelAGateway(CLUSTER_NODES)
+gateway = AAGateway(CLUSTER_NODES)
 app = FastAPI(
-    title="DistRes Model A Gateway",
-    description="Model A: active-active read scaling with leader-routed writes.",
+    title="DistRes Gateway",
+    description="Active-Active read scaling with leader-routed writes.",
 )
 
 

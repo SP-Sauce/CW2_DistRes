@@ -14,7 +14,7 @@ DB_PATH = DATA_DIR / "users.db"
 PRODUCT_FILE_PATH = DATA_DIR / "ProductSpecification.txt"
 BACKUP_DIR = Path(_backup_dir).resolve() if _backup_dir else BASE_DIR / "data" / "backup"
 
-# Model A node settings. Every node can serve safe reads; the gateway routes writes to leader.
+# Node settings. Every node can serve safe reads; the gateway routes writes to leader.
 NODE_ID = os.environ.get("DISTRES_NODE_ID", "local")
 REPLICATION_TARGET = os.environ.get("DISTRES_REPLICATION_TARGET", "").rstrip("/")
 SESSION_STALE_AFTER_SECONDS = int(os.environ.get("DISTRES_SESSION_STALE_AFTER_SECONDS", "60"))
