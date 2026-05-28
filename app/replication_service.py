@@ -27,7 +27,7 @@ class ReplicationService:
             "file_backup": str(file_backup),
         }
 
-    # Sends current state to a configured target over HTTP; Model A normally uses snapshots only.
+    # Sends current state to a configured target over HTTP;  normally uses snapshots only.
     def replicate_state(
         self,
         *,
