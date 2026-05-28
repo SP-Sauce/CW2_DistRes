@@ -11,11 +11,11 @@ def main() -> None:
     os.chdir(ROOT_DIR)
     sys.path.insert(0, str(ROOT_DIR))
 
-    os.environ["DISTRES_NODE_ID"] = "primary"
-    os.environ["DISTRES_ROLE"] = "primary"
-    os.environ["DISTRES_DATA_DIR"] = str(ROOT_DIR / "data")
-    os.environ["DISTRES_REPLICATION_TARGET"] = "http://127.0.0.1:8002"
-    os.environ["PORT"] = "8001"
+    os.environ["DISTRES_NODE_ID"] = "node2"
+    os.environ["DISTRES_DATA_DIR"] = str(ROOT_DIR / "data" / "shared")
+    os.environ["DISTRES_BACKUP_DIR"] = str(ROOT_DIR / "data" / "backup")
+    os.environ.pop("DISTRES_REPLICATION_TARGET", None)
+    os.environ["PORT"] = "8002"
 
     runpy.run_path(str(ROOT_DIR / "main.py"), run_name="__main__")
 

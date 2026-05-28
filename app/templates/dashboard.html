@@ -27,7 +27,7 @@
 
     <section class="panel resource-panel">
       <h2>2. Shared Distributed Resource</h2>
-      <p>ProductSpecification.txt is hosted server-side and protected by the ReadWriteCoordinator.</p>
+      <p>ProductSpecification.txt is hosted server-side and protected by a DB-backed distributed write lock.</p>
       <div class="button-row">
         <button onclick="startRead()">Start read session</button>
         <button onclick="finishRead()" class="secondary">Finish read</button>
@@ -44,7 +44,10 @@
     <section class="panel lock-panel">
       <h2>3. Read/Write Lock State</h2>
       <p><strong>Active readers:</strong> <span id="active-readers">[]</span></p>
-      <p><strong>Active writer:</strong> <span id="active-writer">None</span></p>
+      <p><strong>Distributed writer:</strong> <span id="active-writer">None</span></p>
+      <p><strong>Owner server:</strong> <span id="lock-owner-server">None</span></p>
+      <p><strong>Lease expires:</strong> <span id="lock-expires-at">None</span></p>
+      <p><strong>Lock version:</strong> <span id="lock-version">0</span></p>
       <p><strong>Waiting writers:</strong> <span id="waiting-writers">[]</span></p>
     </section>
 
@@ -54,15 +57,20 @@
       <pre id="events"></pre>
     </section>
 
-    <section class="panel failover-panel">
-      <h2>5. Fault Tolerance / Retry</h2>
-      <p>Gateway-managed primary/standby health state for the active server process.</p>
-      <p><strong>Active server:</strong> <span id="active-server">PRIMARY</span></p>
+    <section class="panel gateway-panel">
+      <h2>5. Model A Gateway</h2>
+      <p>Model A: active-active read scaling with leader-routed writes.</p>
+      <p><strong>This server:</strong> <span id="active-server">unknown</span></p>
+      <p><strong>Leader:</strong> <span id="gateway-leader">unknown</span></p>
+      <p><strong>Read policy:</strong> <span id="read-policy">round-robin</span></p>
+      <p><strong>Write policy:</strong> <span id="write-policy">leader-routed</span></p>
+      <p><strong>Cluster health:</strong> <span id="cluster-health">unknown</span></p>
+      <p><strong>Last election:</strong> <span id="last-election">None</span></p>
       <div class="button-row">
         <button onclick="refreshState()">Refresh health</button>
         <button onclick="checkGateway()" class="secondary">Gateway status</button>
       </div>
-      <p class="hint">The frontend wraps requests in retry logic while the gateway switches traffic if the primary server stops responding.</p>
+      <p class="hint">Reads are load-balanced across healthy nodes; writes are routed to the Bully-elected leader and checked by the distributed lock.</p>
     </section>
   </main>
 
@@ -70,6 +78,7 @@
 const username = {{ username | tojson }};
 const serverSessionToken = {{ session_token | tojson }};
 const eventBox = document.getElementById("events");
+let currentLockToken = sessionStorage.getItem("distres_lock_token") || "";
 
 if (serverSessionToken) {
   sessionStorage.setItem("distres_session", serverSessionToken);
@@ -83,6 +92,7 @@ document.getElementById("logout-session-id").value = sessionToken();
 document.getElementById("logout-form").addEventListener("submit", () => {
   document.getElementById("logout-session-id").value = sessionToken();
   sessionStorage.removeItem("distres_session");
+  sessionStorage.removeItem("distres_lock_token");
 });
 
 function addEventLine(text) {
@@ -99,6 +109,7 @@ async function safeFetch(url, options = {}, attempts = 3) {
         headers: new Headers(options.headers || {})
       };
       requestOptions.headers.set("X-DistRes-Session", sessionToken());
+      if (currentLockToken) requestOptions.headers.set("X-DistRes-Lock-Token", currentLockToken);
       const response = await fetch(url, requestOptions);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await response.json();
@@ -116,6 +127,7 @@ async function refreshState() {
 }
 
 function renderState(state) {
+  const distributedLock = state.distributed_write_lock || state.resource.distributed_write_lock || {};
   document.getElementById("clients").innerHTML = state.sessions
     .map(s => `<li>${s.username} <small>session ...${s.session_id_tail}</small></li>`)
     .join("");
@@ -123,13 +135,19 @@ function renderState(state) {
   document.getElementById("active-readers").textContent =
     JSON.stringify(state.resource.active_readers);
   document.getElementById("active-writer").textContent =
-    state.resource.active_writer || "None";
+    distributedLock.active_writer || "None";
+  document.getElementById("lock-owner-server").textContent =
+    distributedLock.owner_server || "None";
+  document.getElementById("lock-expires-at").textContent =
+    distributedLock.expires_at || "None";
+  document.getElementById("lock-version").textContent =
+    String(distributedLock.version ?? 0);
   document.getElementById("waiting-writers").textContent =
     JSON.stringify(state.resource.waiting_writers);
   document.getElementById("active-server").textContent =
     state.health.node_id
-      ? `${state.health.node_id} (${state.health.active_role})`
-      : state.health.active_server;
+      ? `${state.health.node_id} (${state.health.cluster_role})`
+      : "unknown";
 }
 
 async function startRead() {
@@ -149,6 +167,10 @@ async function finishRead() {
 async function requestWrite() {
   const data = await safeFetch("/api/write/request", {method: "POST"});
   document.getElementById("resource-message").textContent = data.message;
+  if (data.lock_token) {
+    currentLockToken = data.lock_token;
+    sessionStorage.setItem("distres_lock_token", currentLockToken);
+  }
   if (["GRANTED", "ACTIVE"].includes(data.status)) document.getElementById("file-content").value = data.content;
   renderState(data.state);
 }
@@ -156,14 +178,19 @@ async function requestWrite() {
 async function saveWrite() {
   const form = new FormData();
   form.append("content", document.getElementById("file-content").value);
+  if (currentLockToken) form.append("lock_token", currentLockToken);
   const data = await safeFetch("/api/write/save", {method: "POST", body: form});
   document.getElementById("resource-message").textContent = data.message;
   renderState(data.state);
 }
 
 async function finishWrite() {
-  const data = await safeFetch("/api/write/finish", {method: "POST"});
+  const form = new FormData();
+  if (currentLockToken) form.append("lock_token", currentLockToken);
+  const data = await safeFetch("/api/write/finish", {method: "POST", body: form});
   document.getElementById("resource-message").textContent = "Write lock released.";
+  currentLockToken = "";
+  sessionStorage.removeItem("distres_lock_token");
   renderState(data.state);
 }
 
@@ -172,7 +199,17 @@ async function checkGateway() {
     const response = await fetch("/gateway/status");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    addEventLine(`gateway: active=${data.active_backend}, primary=${data.primary_health.ok}, standby=${data.standby_health.ok}`);
+    const health = Object.entries(data.cluster_health || {})
+      .map(([name, node]) => `${name}:${node.ok ? "ok" : "down"}`)
+      .join(", ");
+    document.getElementById("gateway-leader").textContent =
+      data.leader ? `${data.leader} (${data.leader_url})` : "unknown";
+    document.getElementById("read-policy").textContent = data.load_balancing_policy;
+    document.getElementById("write-policy").textContent = data.write_routing_policy;
+    document.getElementById("cluster-health").textContent = health || "unknown";
+    document.getElementById("last-election").textContent =
+      data.last_election ? `${data.last_election.winner} at ${data.last_election.timestamp}` : "None";
+    addEventLine(`gateway: leader=${data.leader}, active=${data.active_backend}, health=[${health}]`);
   } catch (err) {
     addEventLine(`Gateway status unavailable from this URL (${err.message})`);
   }
@@ -183,7 +220,7 @@ const source = new EventSource("/events");
 source.onmessage = (event) => addEventLine(event.data);
 ["subscribed", "client_connected", "client_disconnected", "reader_active",
  "reader_released", "writer_active", "file_updated", "writer_released",
- "server_failover", "server_restored", "gateway_failover"].forEach(type => {
+ "gateway_routing_issue", "leader_election"].forEach(type => {
   source.addEventListener(type, (event) => {
     const body = JSON.parse(event.data);
     addEventLine(`${body.type}: ${JSON.stringify(body.payload)}`);
@@ -192,7 +229,9 @@ source.onmessage = (event) => addEventLine(event.data);
 });
 
 refreshState();
+checkGateway();
 setInterval(refreshState, 5000);
+setInterval(checkGateway, 7000);
 </script>
 </body>
 </html>

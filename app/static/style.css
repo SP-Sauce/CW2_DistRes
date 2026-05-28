@@ -375,7 +375,12 @@ button.secondary {
 }
 
 .lock-panel span,
-#active-server {
+#active-server,
+#gateway-leader,
+#read-policy,
+#write-policy,
+#cluster-health,
+#last-election {
   display: inline-flex;
   max-width: 100%;
   align-items: center;

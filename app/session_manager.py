@@ -17,7 +17,7 @@ class ClientSession:
     last_seen: str
 
 
-# Tracks connected users in SQLite so standby nodes can continue after failover.
+# Tracks connected users in SQLite so every active node sees the same sessions.
 class SessionManager:
     # Serialises local session-table writes inside this server process.
     def __init__(self) -> None:
@@ -123,7 +123,7 @@ class SessionManager:
             for row in rows
         ]
 
-    # Exports the full session table for primary-to-standby replication.
+    # Exports the full session table for optional snapshot/replication support.
     def export_sessions(self) -> list[dict]:
         with self._lock:
             with get_connection() as conn:

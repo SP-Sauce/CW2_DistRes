@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title DistRes Failover Gateway
+title DistRes Node 2
 cd /d "%~dp0"
 set "PY_EXE="
 call :select_python
@@ -12,14 +12,14 @@ if not defined PY_EXE (
     exit /b 1
 )
 "%PY_EXE%" -c "import sys; print('Using Python: ' + sys.executable)"
-echo Starting DistRes failover gateway on http://127.0.0.1:8000
+echo Starting DistRes node2 on http://127.0.0.1:8002
 echo Press Ctrl+C to stop.
 echo.
-"%PY_EXE%" "app\Run_Servers\Failover_Gateway_Run.py"
+"%PY_EXE%" "app\Run_Servers\Node2_Server_Run.py"
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     echo.
-    echo Failover gateway stopped with error code %EXIT_CODE%.
+    echo Node 2 stopped with error code %EXIT_CODE%.
     pause
 )
 exit /b %EXIT_CODE%

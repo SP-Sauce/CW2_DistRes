@@ -15,7 +15,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="DistRes v2 - Distributed Resource Access and Synchronisation Engine",
-        description="6CM604 CW2 prototype: client-server coordination, pub-sub, read/write access and failover handling.",
+        description="6CM604 CW2 prototype: Model A active-active reads, leader-routed writes, pub-sub, and distributed locking.",
         version="1.0.0",
     )
 

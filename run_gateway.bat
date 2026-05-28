@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title DistRes Standby Server
+title DistRes Model A Gateway
 cd /d "%~dp0"
 set "PY_EXE="
 call :select_python
@@ -12,14 +12,14 @@ if not defined PY_EXE (
     exit /b 1
 )
 "%PY_EXE%" -c "import sys; print('Using Python: ' + sys.executable)"
-echo Starting DistRes standby server on http://127.0.0.1:8002
+echo Starting DistRes Model A gateway on http://127.0.0.1:8000
 echo Press Ctrl+C to stop.
 echo.
-"%PY_EXE%" "app\Run_Servers\Standby_Server_Run.py"
+"%PY_EXE%" "app\Run_Servers\Gateway_Run.py"
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     echo.
-    echo Standby server stopped with error code %EXIT_CODE%.
+    echo Gateway stopped with error code %EXIT_CODE%.
     pause
 )
 exit /b %EXIT_CODE%

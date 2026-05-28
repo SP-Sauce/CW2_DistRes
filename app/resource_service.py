@@ -1,46 +1,61 @@
-from .config import PRODUCT_FILE_PATH
+from .config import NODE_ID, PRODUCT_FILE_PATH
+from .distributed_lock import distributed_write_lock
+from .distributed_readers import distributed_read_tracker
 from .replication_service import replication_service
-from .rw_lock import rw_coordinator
 
 
 # Logical service that controls read/write access to the shared product file.
 class ResourceAccessService:
     # Tries to grant read access and returns the current file content if allowed.
     def start_read(self, username: str) -> tuple[bool, str, str]:
-        granted, message = rw_coordinator.start_read(username)
+        granted, message = distributed_read_tracker.start_read(username, NODE_ID)
         if not granted:
             return False, message, ""
         return True, message, PRODUCT_FILE_PATH.read_text(encoding="utf-8")
 
-    # Releases a user's read lock after they finish viewing the shared file.
+    # Releases a user's shared read marker after they finish viewing the shared file.
     def finish_read(self, username: str) -> None:
-        rw_coordinator.finish_read(username)
+        distributed_read_tracker.finish_read(username)
 
-    # Tries to grant or queue write access and returns editable content if granted.
-    def request_write(self, username: str) -> tuple[str, str, str]:
-        status, message = rw_coordinator.request_write(username)
+    # Keeps active readers visible while their dashboard continues polling.
+    def touch_read(self, username: str) -> None:
+        distributed_read_tracker.touch_reader(username, NODE_ID)
+
+    # Requests the DB-backed distributed write lock from the elected leader.
+    def request_write(self, username: str) -> tuple[str, str, str, str | None]:
+        # A client moving from read to write should not remain an active reader.
+        distributed_read_tracker.finish_read(username)
+        status, message, lock_token = distributed_write_lock.request_write(username, NODE_ID)
         content = PRODUCT_FILE_PATH.read_text(encoding="utf-8") if status in {"GRANTED", "ACTIVE"} else ""
-        return status, message, content
+        return status, message, content, lock_token
 
-    # Writes new content only if the user currently owns the write lock.
-    def save_write(self, username: str, new_content: str) -> tuple[bool, str]:
-        lock_state = rw_coordinator.status()
-        if lock_state["active_writer"] != username:
-            return False, "Save rejected: you do not currently own the write lock."
+    # Writes new content only when the user owns the DB-backed distributed write lock.
+    def save_write(self, username: str, new_content: str, lock_token: str | None = None) -> tuple[bool, str]:
+        if not distributed_write_lock.can_write(username, lock_token):
+            return False, "Save rejected: you do not own the distributed write lock."
 
         PRODUCT_FILE_PATH.write_text(new_content, encoding="utf-8")
         replication = replication_service.replicate_state(product_content=new_content)
         if replication["ok"]:
-            return True, "File updated and replicated to the standby replica."
-        return True, "File updated locally with a backup snapshot; standby replication will need retry."
+            return True, "File updated through leader-routed write and DB-backed distributed lock."
+        return True, "File updated through leader-routed write and DB-backed distributed lock; backup snapshot kept locally."
 
-    # Releases a user's write lock so the next queued writer can continue.
-    def finish_write(self, username: str) -> bool:
-        return rw_coordinator.finish_write(username)
+    # Releases the DB-backed distributed write lock so another client can write.
+    def finish_write(self, username: str, lock_token: str | None = None) -> bool:
+        return distributed_write_lock.finish_write(username, lock_token)
 
-    # Returns the current read/write lock state for the dashboard.
+    # Returns shared reader markers and the distributed write lock state.
     def status(self) -> dict:
-        return rw_coordinator.status()
+        distributed_read_status = distributed_read_tracker.current_status()
+        distributed_status = distributed_write_lock.current_status()
+        return {
+            "active_readers": distributed_read_status["active_readers"],
+            "active_writer": distributed_status["active_writer"],
+            "waiting_writers": [],
+            "read_count": distributed_read_status["reader_count"],
+            "distributed_readers": distributed_read_status,
+            "distributed_write_lock": distributed_status,
+        }
 
 
 resource_service = ResourceAccessService()

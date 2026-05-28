@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title DistRes Primary Server
+title DistRes Node 3
 cd /d "%~dp0"
 set "PY_EXE="
 call :select_python
@@ -12,14 +12,14 @@ if not defined PY_EXE (
     exit /b 1
 )
 "%PY_EXE%" -c "import sys; print('Using Python: ' + sys.executable)"
-echo Starting DistRes primary server on http://127.0.0.1:8001
+echo Starting DistRes node3 on http://127.0.0.1:8003
 echo Press Ctrl+C to stop.
 echo.
-"%PY_EXE%" "app\Run_Servers\Primary_Server_Run.py"
+"%PY_EXE%" "app\Run_Servers\Node3_Server_Run.py"
 set "EXIT_CODE=%ERRORLEVEL%"
 if not "%EXIT_CODE%"=="0" (
     echo.
-    echo Primary server stopped with error code %EXIT_CODE%.
+    echo Node 3 stopped with error code %EXIT_CODE%.
     pause
 )
 exit /b %EXIT_CODE%

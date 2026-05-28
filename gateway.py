@@ -3,7 +3,6 @@ import json
 import os
 import threading
 import urllib.error
-import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Iterable
@@ -12,23 +11,62 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 
-PRIMARY_URL = os.environ.get("DISTRES_PRIMARY_URL", "http://127.0.0.1:8001").rstrip("/")
-STANDBY_URL = os.environ.get("DISTRES_STANDBY_URL", "http://127.0.0.1:8002").rstrip("/")
+GATEWAY_MODE = "active-active-read-scaling-leader-routed-writes"
+GATEWAY_HEADER_VALUE = "active-active-read-scaling-leader-election"
+LEADER_ELECTION_ALGORITHM = "Simplified Bully Algorithm"
+
+NODE1_URL = os.environ.get(
+    "DISTRES_NODE1_URL",
+    os.environ.get("DISTRES_PRIMARY_URL", "http://127.0.0.1:8001"),
+).rstrip("/")
+NODE2_URL = os.environ.get(
+    "DISTRES_NODE2_URL",
+    os.environ.get("DISTRES_STANDBY_URL", "http://127.0.0.1:8002"),
+).rstrip("/")
+NODE3_URL = os.environ.get("DISTRES_NODE3_URL", "http://127.0.0.1:8003").rstrip("/")
+
 HEALTH_TIMEOUT = float(os.environ.get("DISTRES_HEALTH_TIMEOUT", "1.2"))
 REQUEST_TIMEOUT = float(os.environ.get("DISTRES_REQUEST_TIMEOUT", "8"))
 
 CLUSTER_NODES = [
     {
-        "name": "primary",
-        "url": PRIMARY_URL,
+        "name": "node1",
+        "url": NODE1_URL,
+        "priority": 3,
+    },
+    {
+        "name": "node2",
+        "url": NODE2_URL,
         "priority": 2,
     },
     {
-        "name": "standby",
-        "url": STANDBY_URL,
+        "name": "node3",
+        "url": NODE3_URL,
         "priority": 1,
     },
 ]
+
+SAFE_EXACT_ROUTES = {
+    ("GET", "/"),
+    ("HEAD", "/"),
+    ("GET", "/dashboard"),
+    ("GET", "/api/state"),
+    ("GET", "/api/me"),
+    ("GET", "/api/health"),
+    ("POST", "/api/read/start"),
+    ("POST", "/api/read/finish"),
+}
+
+LEADER_EXACT_ROUTES = {
+    ("POST", "/login"),
+    ("POST", "/logout"),
+    ("POST", "/gateway/election"),
+    ("POST", "/api/write/request"),
+    ("POST", "/api/write/save"),
+    ("POST", "/api/write/finish"),
+    ("GET", "/internal/export/state"),
+    ("POST", "/internal/replicate/state"),
+}
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -48,58 +86,59 @@ class BackendUnavailable(RuntimeError):
     pass
 
 
-class FailoverGateway:
-    # Stores primary/standby URLs and starts with primary as the preferred backend.
-    def __init__(self, primary_url: str, standby_url: str) -> None:
-        self.primary_url = primary_url
-        self.standby_url = standby_url
-        self._active_url = primary_url
-        self._active_name = "primary"
-        self._leader_url = primary_url
-        self._leader_name = "primary"
+class ModelAGateway:
+    # Model A: active-active read scaling with leader-routed writes.
+    def __init__(self, cluster_nodes: list[dict]) -> None:
+        self.cluster_nodes = cluster_nodes
+        leader = max(cluster_nodes, key=lambda node: node["priority"])
+        self._leader_name = leader["name"]
+        self._leader_url = leader["url"]
+        self._active_name = leader["name"]
+        self._active_url = leader["url"]
         self._last_election = None
-        self._standby_promoted = False
+        self._rr_index = 0
         self._lock = threading.Lock()
 
-    # Returns gateway state plus fresh health checks for primary and standby.
+    # Returns gateway routing policy, cluster health, and election state for the UI/demo.
     def status(self) -> dict:
-        primary_health = self._health(self.primary_url)
-        standby_health = self._health(self.standby_url)
+        health = self._cluster_health()
         with self._lock:
-            active_name = self._active_name
-            active_url = self._active_url
             leader_name = self._leader_name
             leader_url = self._leader_url
+            active_name = self._active_name
+            active_url = self._active_url
             last_election = self._last_election
-            standby_promoted = self._standby_promoted
+            rr_index = self._rr_index
+
         return {
-            "active_backend": active_name,
-            "active_url": active_url,
-            "leader": leader_name,
-            "leader_url": leader_url,
-            "last_election": last_election,
-            "leader_election_algorithm": "Simplified Bully Algorithm",
+            "gateway_mode": GATEWAY_MODE,
+            "model": "Model A: active-active read scaling with leader-routed writes.",
+            "load_balancing_policy": "round-robin for safe/read requests",
+            "write_routing_policy": "writes routed to Bully-elected leader",
+            "leader_election_algorithm": LEADER_ELECTION_ALGORITHM,
             "cluster_nodes": [
                 {
                     "name": node["name"],
                     "url": node["url"],
                     "priority": node["priority"],
                 }
-                for node in CLUSTER_NODES
+                for node in self.cluster_nodes
             ],
-            "primary_url": self.primary_url,
-            "standby_url": self.standby_url,
-            "primary_health": primary_health,
-            "standby_health": standby_health,
-            "standby_promoted": standby_promoted,
+            "cluster_health": health,
+            "leader": leader_name,
+            "leader_url": leader_url,
+            "active_backend": active_name,
+            "active_url": active_url,
+            "last_election": last_election,
+            "round_robin_index": rr_index,
         }
 
-    # Runs a simplified Bully election and makes the highest-priority healthy node leader.
+    # Simplified Bully Algorithm: highest-priority healthy server becomes coordinator.
     def run_bully_election(self, reason: str = "manual") -> dict:
         candidates = []
         unavailable_nodes = []
 
-        for node in CLUSTER_NODES:
+        for node in self.cluster_nodes:
             health = self._health(node["url"])
             election_node = {
                 "name": node["name"],
@@ -116,23 +155,8 @@ class FailoverGateway:
             raise BackendUnavailable("Election failed: no healthy nodes responded.")
 
         winner = max(candidates, key=lambda node: node["priority"])
-
-        with self._lock:
-            previous_active_name = self._active_name
-
-        if winner["name"] == "standby":
-            self._promote_standby()
-        else:
-            standby_healthy = self._is_healthy(self.standby_url)
-            if previous_active_name == "standby" and standby_healthy:
-                if not self._sync_state(self.standby_url, self.primary_url):
-                    raise BackendUnavailable(
-                        "Election failed: primary won but standby state could not be synced back."
-                    )
-            if standby_healthy:
-                self._demote_standby()
-
         election_result = {
+            "algorithm": LEADER_ELECTION_ALGORITHM,
             "reason": reason,
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "winner": winner["name"],
@@ -141,58 +165,56 @@ class FailoverGateway:
             "candidates": [
                 {
                     "name": candidate["name"],
+                    "url": candidate["url"],
                     "priority": candidate["priority"],
                     "healthy": True,
+                    "health": candidate["health"],
                 }
                 for candidate in candidates
             ],
             "unavailable_nodes": [
                 {
                     "name": node["name"],
+                    "url": node["url"],
                     "priority": node["priority"],
                     "healthy": False,
-                    "error": node["health"].get("error"),
+                    "health": node["health"],
                 }
                 for node in unavailable_nodes
             ],
         }
 
         with self._lock:
-            self._active_name = winner["name"]
-            self._active_url = winner["url"]
             self._leader_name = winner["name"]
             self._leader_url = winner["url"]
-            self._standby_promoted = winner["name"] == "standby"
+            self._active_name = winner["name"]
+            self._active_url = winner["url"]
             self._last_election = election_result
 
         return election_result
 
-    # Chooses the backend for the next client request and starts election if the leader fails.
-    def choose_backend(self) -> tuple[str, str]:
-        with self._lock:
-            active_name = self._active_name
-            active_url = self._active_url
-            standby_promoted = self._standby_promoted
+    # Chooses a backend using Model A routing: load-balanced reads, leader-routed writes.
+    def choose_backend(self, path: str, method: str) -> tuple[str, str, str]:
+        normalised_path = _normalise_path(path)
+        method = method.upper()
 
-        active_healthy = self._is_healthy(active_url)
-        if active_healthy:
-            if active_name != "standby" or standby_promoted:
-                return active_name, active_url
-            election_reason = "standby selected after failed primary request"
-        else:
-            election_reason = f"{active_name} failed health check"
+        if normalised_path == "/events":
+            return self._choose_leader_backend("sse stream prefers elected leader")
 
-        self.run_bully_election(reason=election_reason)
+        if _requires_leader(normalised_path, method):
+            return self._choose_leader_backend("leader-routed write/coordination request")
 
-        with self._lock:
-            return self._active_name, self._active_url
+        return self._choose_read_backend("round-robin safe/read request")
 
-    # Moves traffic away from a failed primary so the next request checks standby first.
+    # Clears the selected leader after a proxy failure so the next write triggers election.
     def mark_failed(self, backend_url: str) -> None:
         with self._lock:
-            if backend_url == self._active_url and self._active_name == "primary":
-                self._active_url = self.standby_url
-                self._active_name = "standby"
+            if backend_url == self._leader_url:
+                self._leader_name = ""
+                self._leader_url = ""
+            if backend_url == self._active_url:
+                self._active_name = ""
+                self._active_url = ""
 
     # Returns True when a backend responds successfully to its health endpoint.
     def _is_healthy(self, base_url: str) -> bool:
@@ -203,70 +225,87 @@ class FailoverGateway:
         try:
             with urllib.request.urlopen(f"{base_url}/api/health", timeout=HEALTH_TIMEOUT) as response:
                 body = response.read().decode("utf-8")
+                status = getattr(response, "status", 200)
             payload = json.loads(body) if body else {}
-            return {"ok": True, "status": getattr(response, "status", 200), "payload": payload}
+            return {"ok": True, "status": status, "payload": payload}
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             return {"ok": False, "error": str(exc)}
 
-    # Tells the standby server to start accepting client requests after primary failure.
-    def _promote_standby(self) -> None:
-        with self._lock:
-            if self._standby_promoted:
-                return
-
-        request = urllib.request.Request(
-            f"{self.standby_url}/internal/promote",
-            data=b"",
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-            response.read()
-
-    # Copies full active state from one backend into another during manual failback.
-    def _sync_state(self, source_url: str, target_url: str) -> bool:
-        try:
-            with urllib.request.urlopen(
-                f"{source_url}/internal/export/state",
-                timeout=REQUEST_TIMEOUT,
-            ) as response:
-                body = response.read().decode("utf-8")
-            source_state = json.loads(body) if body else {}
-
-            payload = {
-                "product_content": source_state.get("product_content"),
-                "sessions": source_state.get("sessions", []),
+    def _cluster_health(self) -> dict:
+        return {
+            node["name"]: {
+                "url": node["url"],
+                "priority": node["priority"],
+                **self._health(node["url"]),
             }
-            request = urllib.request.Request(
-                f"{target_url}/internal/replicate/state",
-                data=json.dumps(payload).encode("utf-8"),
-                method="POST",
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-                response.read()
-            return True
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            return False
+            for node in self.cluster_nodes
+        }
 
-    # Returns a promoted standby to passive mode after primary has been restored.
-    def _demote_standby(self) -> None:
-        request = urllib.request.Request(
-            f"{self.standby_url}/internal/demote",
-            data=b"",
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
-                response.read()
-        except (urllib.error.URLError, TimeoutError):
-            pass
+    def _healthy_nodes(self) -> list[dict]:
+        healthy = []
+        for node in self.cluster_nodes:
+            health = self._health(node["url"])
+            if health.get("ok", False):
+                healthy.append({**node, "health": health})
+        return healthy
+
+    def _choose_read_backend(self, policy: str) -> tuple[str, str, str]:
+        healthy_nodes = self._healthy_nodes()
+        if not healthy_nodes:
+            raise BackendUnavailable("No healthy DistRes nodes are available for read routing.")
+
+        with self._lock:
+            selected = healthy_nodes[self._rr_index % len(healthy_nodes)]
+            self._rr_index = (self._rr_index + 1) % len(self.cluster_nodes)
+            self._active_name = selected["name"]
+            self._active_url = selected["url"]
+
+        return selected["name"], selected["url"], policy
+
+    def _choose_leader_backend(self, policy: str) -> tuple[str, str, str]:
+        with self._lock:
+            leader_name = self._leader_name
+            leader_url = self._leader_url
+
+        if leader_url and self._is_healthy(leader_url):
+            with self._lock:
+                self._active_name = leader_name
+                self._active_url = leader_url
+            return leader_name, leader_url, policy
+
+        election = self.run_bully_election(reason="current leader failed health check")
+        return election["winner"], election["winner_url"], policy
 
 
-gateway = FailoverGateway(PRIMARY_URL, STANDBY_URL)
+gateway = ModelAGateway(CLUSTER_NODES)
 app = FastAPI(
-    title="DistRes Failover Gateway",
-    description="Active-passive gateway for real primary/standby DistRes failover.",
+    title="DistRes Model A Gateway",
+    description="Model A: active-active read scaling with leader-routed writes.",
 )
+
+
+def _normalise_path(path: str) -> str:
+    normalised = f"/{path.lstrip('/')}" if path else "/"
+    if len(normalised) > 1:
+        normalised = normalised.rstrip("/")
+    return normalised
+
+
+def _requires_leader(path: str, method: str) -> bool:
+    route_key = (method.upper(), path)
+    if route_key in LEADER_EXACT_ROUTES:
+        return True
+    if route_key in SAFE_EXACT_ROUTES:
+        return False
+    if path.startswith("/internal/"):
+        return True
+    if path.startswith("/api/write/"):
+        return True
+    if path.startswith("/static/"):
+        return False
+    if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return False
+    return True
 
 
 # Builds the upstream backend URL while preserving the original path and query string.
@@ -277,7 +316,7 @@ def _target_url(base_url: str, path: str, query_string: bytes) -> str:
     return url
 
 
-# Copies safe request headers to the backend and tags requests as gateway traffic.
+# Copies safe request headers to the backend; routing metadata is added after selection.
 def _forward_headers(request: Request) -> dict:
     headers = {}
     for name, value in request.headers.items():
@@ -285,8 +324,17 @@ def _forward_headers(request: Request) -> dict:
         if lower_name in HOP_BY_HOP_HEADERS or lower_name == "host":
             continue
         headers[name] = value
-    headers["X-DistRes-Gateway"] = "active-passive"
+    headers["X-DistRes-Gateway"] = GATEWAY_HEADER_VALUE
     return headers
+
+
+def _add_routing_headers(headers: dict, backend_name: str, routing_policy: str) -> dict:
+    routed_headers = dict(headers)
+    routed_headers["X-DistRes-Selected-Backend"] = backend_name
+    routed_headers["X-DistRes-Routing-Policy"] = routing_policy
+    with gateway._lock:
+        routed_headers["X-DistRes-Leader"] = gateway._leader_name
+    return routed_headers
 
 
 # Copies safe upstream response headers back to the browser response.
@@ -321,29 +369,33 @@ def _proxy_blocking(method: str, url: str, headers: dict, body: bytes) -> Respon
     return response
 
 
-# Proxies normal HTTP requests and retries once if the selected backend fails.
+# Proxies normal HTTP requests and retries across healthy nodes when routing fails.
 async def _proxy_request(path: str, request: Request) -> Response:
     body = await request.body()
-    headers = _forward_headers(request)
+    base_headers = _forward_headers(request)
 
     last_error = "No backend selected."
-    for _ in range(2):
+    max_attempts = max(2, len(CLUSTER_NODES) + 1)
+    for _ in range(max_attempts):
+        backend_url = ""
         try:
-            _backend_name, backend_url = gateway.choose_backend()
+            backend_name, backend_url, routing_policy = gateway.choose_backend(path, request.method)
+            headers = _add_routing_headers(base_headers, backend_name, routing_policy)
             url = _target_url(backend_url, path, request.scope.get("query_string", b""))
-            return await asyncio.to_thread(
+            response = await asyncio.to_thread(
                 _proxy_blocking,
                 request.method,
                 url,
                 headers,
                 body,
             )
+            response.headers["X-DistRes-Routed-Backend"] = backend_name
+            response.headers["X-DistRes-Routing-Policy"] = routing_policy
+            return response
         except (BackendUnavailable, urllib.error.URLError, TimeoutError) as exc:
             last_error = str(exc)
-            try:
+            if backend_url:
                 gateway.mark_failed(backend_url)
-            except UnboundLocalError:
-                pass
 
     return JSONResponse(
         {"detail": "No healthy DistRes backend is available.", "error": last_error},
@@ -352,69 +404,60 @@ async def _proxy_request(path: str, request: Request) -> Response:
 
 
 @app.get("/gateway/status")
-# Shows gateway health and which backend is currently active.
 async def gateway_status():
     return gateway.status()
 
 
 @app.get("/gateway/election")
-# Shows the current leader-election view without changing the active backend.
 async def gateway_election_status():
-    return {
-        "ok": True,
-        "algorithm": "Simplified Bully Algorithm",
-        "gateway": gateway.status(),
-    }
+    with gateway._lock:
+        return {
+            "ok": True,
+            "algorithm": LEADER_ELECTION_ALGORITHM,
+            "leader": gateway._leader_name,
+            "leader_url": gateway._leader_url,
+            "last_election": gateway._last_election,
+        }
 
 
 @app.post("/gateway/election")
-# Manually runs the Bully election so the highest-priority healthy node becomes leader.
 async def gateway_election():
     try:
         result = gateway.run_bully_election(reason="manual election requested")
         return {
             "ok": True,
-            "algorithm": "Simplified Bully Algorithm",
+            "algorithm": LEADER_ELECTION_ALGORITHM,
             "election": result,
             "gateway": gateway.status(),
         }
-    except (BackendUnavailable, urllib.error.URLError, TimeoutError) as exc:
+    except BackendUnavailable as exc:
         return JSONResponse(
             {
                 "ok": False,
-                "algorithm": "Simplified Bully Algorithm",
+                "algorithm": LEADER_ELECTION_ALGORITHM,
                 "detail": str(exc),
             },
             status_code=503,
         )
 
 
-@app.post("/gateway/reset-primary")
-# Resets the gateway preference back to primary after manually restarting it.
-async def reset_primary():
-    if not gateway._is_healthy(PRIMARY_URL):
-        return JSONResponse({"detail": "Primary is not healthy."}, status_code=503)
-    try:
-        gateway.run_bully_election(reason="manual primary reset requested")
-        return gateway.status()
-    except (BackendUnavailable, urllib.error.URLError, TimeoutError) as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=503)
-
-
 @app.get("/events")
-# Proxies Server-Sent Events and reconnects through standby after failover.
 async def proxy_events(request: Request):
-    headers = _forward_headers(request)
+    base_headers = _forward_headers(request)
 
-    # Streams backend SSE lines to the browser until the browser disconnects.
     async def event_stream():
         while True:
             if await request.is_disconnected():
                 break
+            backend_url = ""
             try:
-                backend_name, backend_url = gateway.choose_backend()
-                url = f"{backend_url}/events"
-                upstream_request = urllib.request.Request(url, headers=headers, method="GET")
+                backend_name, backend_url, routing_policy = gateway.choose_backend("events", "GET")
+                headers = _add_routing_headers(base_headers, backend_name, routing_policy)
+                upstream_request = urllib.request.Request(
+                    f"{backend_url}/events",
+                    headers=headers,
+                    method="GET",
+                )
                 upstream = await asyncio.to_thread(
                     urllib.request.urlopen,
                     upstream_request,
@@ -428,12 +471,12 @@ async def proxy_events(request: Request):
             except (BackendUnavailable, urllib.error.URLError, TimeoutError) as exc:
                 payload = json.dumps(
                     {
-                        "type": "gateway_failover",
+                        "type": "gateway_routing_issue",
                         "payload": {"message": str(exc), "gateway": gateway.status()},
                     }
                 )
-                yield f"event: gateway_failover\ndata: {payload}\n\n".encode("utf-8")
-                if "backend_url" in locals():
+                yield f"event: gateway_routing_issue\ndata: {payload}\n\n".encode("utf-8")
+                if backend_url:
                     gateway.mark_failed(backend_url)
                 await asyncio.sleep(1)
 
@@ -441,13 +484,11 @@ async def proxy_events(request: Request):
 
 
 @app.api_route("/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
-# Proxies requests for the root path to the active backend.
 async def proxy_root(request: Request):
     return await _proxy_request("", request)
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
-# Proxies all other paths to the active backend.
 async def proxy_path(path: str, request: Request):
     return await _proxy_request(path, request)
 

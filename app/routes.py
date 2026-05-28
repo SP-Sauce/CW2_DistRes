@@ -9,13 +9,14 @@ from fastapi.templating import Jinja2Templates
 from .auth_service import auth_service
 from .config import PRODUCT_FILE_PATH, TEMPLATES_DIR
 from .event_bus import event_bus
-from .failover import failover_controller
+from .node_status import node_status
 from .replication_service import replication_service
 from .resource_service import resource_service
 from .session_manager import session_manager
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+GATEWAY_HEADER_VALUE = "active-active-read-scaling-leader-election"
 
 
 # Looks up the current session from a tab token first, then from the fallback cookie.
@@ -26,13 +27,24 @@ def current_user(session_token: str | None, cookie_session: str | None = None):
     session_manager.touch(session.session_id)
     return session
 
+def _is_leader_routed_write(
+    x_distres_gateway: str | None,
+    x_distres_routing_policy: str | None,
+) -> bool:
+    return (
+        x_distres_gateway == GATEWAY_HEADER_VALUE
+        and "leader-routed" in (x_distres_routing_policy or "")
+    )
 
-# Rejects normal client operations when this process is a passive standby.
-def ensure_active_node() -> None:
-    if not failover_controller.accepts_client_requests():
+
+def ensure_leader_routed_write(
+    x_distres_gateway: str | None,
+    x_distres_routing_policy: str | None,
+) -> None:
+    if not _is_leader_routed_write(x_distres_gateway, x_distres_routing_policy):
         raise HTTPException(
-            status_code=503,
-            detail="This standby node is passive. Connect through the failover gateway.",
+            status_code=409,
+            detail="Write request rejected: use the gateway so writes are routed to the Bully-elected leader.",
         )
 
 
@@ -44,13 +56,18 @@ async def login_page(request: Request):
 
 @router.post("/login")
 # Validates credentials, creates a client session, and redirects to the dashboard.
-async def login(username: str = Form(...), password: str = Form(...)):
+async def login(
+    username: str = Form(...),
+    password: str = Form(...),
+    x_distres_gateway: str | None = Header(default=None),
+    x_distres_routing_policy: str | None = Header(default=None),
+):
     # - HTTP request from client node to server node.
     # - AuthService checks SQLite.
     # - SessionManager records the active client node.
-    if not failover_controller.accepts_client_requests():
+    if not _is_leader_routed_write(x_distres_gateway, x_distres_routing_policy):
         return RedirectResponse(
-            "/?error=This standby node is passive. Connect through the failover gateway.",
+            "/?error=Write request rejected. Connect through the gateway so login is routed to the elected leader.",
             status_code=303,
         )
 
@@ -74,9 +91,11 @@ async def login(username: str = Form(...), password: str = Form(...)):
 async def logout(
     session_id: str | None = Form(default=None),
     x_distres_session: str | None = Header(default=None),
+    x_distres_gateway: str | None = Header(default=None),
+    x_distres_routing_policy: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
+    ensure_leader_routed_write(x_distres_gateway, x_distres_routing_policy)
     session_token = session_id or x_distres_session or distres_session
     username = session_manager.remove(session_token)
     if username:
@@ -98,7 +117,6 @@ async def dashboard(
     session_id: str | None = Query(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
     session_token = session_id or distres_session
     session = session_manager.get(session_token)
     if not session:
@@ -117,7 +135,11 @@ async def state(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    session_manager.touch(x_distres_session or distres_session)
+    session_token = x_distres_session or distres_session
+    session_manager.touch(session_token)
+    session = session_manager.get(session_token)
+    if session:
+        resource_service.touch_read(session.username)
     return JSONResponse(_state_payload())
 
 
@@ -127,17 +149,18 @@ async def me(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     return {"username": session.username}
 
 
-# Builds one dictionary containing sessions, resource locks, and server health.
+# Builds one dictionary containing sessions, resource locks, and node health.
 def _state_payload() -> dict:
+    resource_status = resource_service.status()
     return {
         "sessions": session_manager.active_users(),
-        "resource": resource_service.status(),
-        "health": failover_controller.health(),
+        "resource": resource_status,
+        "distributed_write_lock": resource_status["distributed_write_lock"],
+        "health": node_status.health(),
     }
 
 
@@ -147,7 +170,6 @@ async def start_read(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     granted, message, content = resource_service.start_read(session.username)
     await event_bus.publish("reader_active", _state_payload())
@@ -160,7 +182,6 @@ async def finish_read(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
     session = current_user(x_distres_session, distres_session)
     resource_service.finish_read(session.username)
     await event_bus.publish("reader_released", _state_payload())
@@ -171,28 +192,42 @@ async def finish_read(
 # Requests exclusive write access or queues the user behind active readers/writers.
 async def request_write(
     x_distres_session: str | None = Header(default=None),
+    x_distres_gateway: str | None = Header(default=None),
+    x_distres_routing_policy: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
+    ensure_leader_routed_write(x_distres_gateway, x_distres_routing_policy)
     # - The client requests write access from the server.
-    # - Server either grants the writer role or queues the client.
+    # - The gateway routes this request to the Bully-elected leader.
+    # - The leader uses the database-backed distributed write lock as final guard.
     # - Pub-sub broadcasts writer status to every active client.
     session = current_user(x_distres_session, distres_session)
-    status, message, content = resource_service.request_write(session.username)
+    status, message, content, lock_token = resource_service.request_write(session.username)
     await event_bus.publish("writer_active", _state_payload())
-    return {"status": status, "message": message, "content": content, "state": _state_payload()}
+    return {
+        "status": status,
+        "message": message,
+        "content": content,
+        "lock_token": lock_token,
+        "state": _state_payload(),
+    }
 
 
 @router.post("/api/write/save")
 # Saves edited file content when the current user owns the write lock.
 async def save_write(
     content: str = Form(...),
+    lock_token: str | None = Form(default=None),
     x_distres_session: str | None = Header(default=None),
+    x_distres_lock_token: str | None = Header(default=None),
+    x_distres_gateway: str | None = Header(default=None),
+    x_distres_routing_policy: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
+    ensure_leader_routed_write(x_distres_gateway, x_distres_routing_policy)
     session = current_user(x_distres_session, distres_session)
-    ok, message = resource_service.save_write(session.username, content)
+    submitted_token = lock_token or x_distres_lock_token
+    ok, message = resource_service.save_write(session.username, content, submitted_token)
     if ok:
         await event_bus.publish(
             "file_updated",
@@ -204,18 +239,23 @@ async def save_write(
 @router.post("/api/write/finish")
 # Releases the current user's write lock and publishes the updated lock state.
 async def finish_write(
+    lock_token: str | None = Form(default=None),
     x_distres_session: str | None = Header(default=None),
+    x_distres_lock_token: str | None = Header(default=None),
+    x_distres_gateway: str | None = Header(default=None),
+    x_distres_routing_policy: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    ensure_active_node()
+    ensure_leader_routed_write(x_distres_gateway, x_distres_routing_policy)
     session = current_user(x_distres_session, distres_session)
-    ok = resource_service.finish_write(session.username)
+    submitted_token = lock_token or x_distres_lock_token
+    ok = resource_service.finish_write(session.username, submitted_token)
     await event_bus.publish("writer_released", _state_payload())
     return {"ok": ok, "state": _state_payload()}
 
 
 @router.post("/internal/replicate/state")
-# Receives primary-to-standby replicated resource and session state.
+# Receives replicated state when compatibility replication is enabled.
 async def receive_replicated_state(request: Request):
     payload = await request.json()
 
@@ -229,44 +269,28 @@ async def receive_replicated_state(request: Request):
 
     return {
         "ok": True,
-        "node": failover_controller.health(),
+        "node": node_status.health(),
         "replicated_product": product_content is not None,
         "replicated_sessions": sessions is not None,
     }
 
 
 @router.get("/internal/export/state")
-# Exports full local state so the gateway can sync standby back to primary.
+# Exports full local state for inspection or compatibility replication.
 async def export_replicated_state():
     return {
         "ok": True,
-        "node": failover_controller.health(),
+        "node": node_status.health(),
         "product_content": PRODUCT_FILE_PATH.read_text(encoding="utf-8"),
         "sessions": session_manager.export_sessions(),
     }
-
-
-@router.post("/internal/promote")
-# Promotes a passive standby after the gateway detects primary failure.
-async def promote_internal():
-    status = failover_controller.promote_standby()
-    await event_bus.publish("server_failover", status)
-    return status
-
-
-@router.post("/internal/demote")
-# Returns a standby node to passive mode during a manual reset.
-async def demote_internal():
-    status = failover_controller.restore_primary()
-    await event_bus.publish("server_restored", status)
-    return status
 
 
 @router.get("/events")
 # Opens the Server-Sent Events stream used for publish-subscribe notifications.
 async def events(request: Request):
     # - Browser subscribes once.
-    # - Server pushes events after login/logout/read/write/failover.
+    # - Server pushes events after login/logout/read/write/leader election.
     # - UI updates without manual refresh.
     client_key = str(uuid.uuid4())
     queue = await event_bus.subscribe(client_key)
@@ -290,22 +314,6 @@ async def events(request: Request):
 
 
 @router.get("/api/health")
-# Returns active server health data for retry and failover UI checks.
+# Returns node health data for gateway routing and election checks.
 async def health():
-    return failover_controller.health()
-
-
-@router.post("/api/failover/promote")
-# Manually promotes this node; the real demo normally does this through the gateway.
-async def promote_standby():
-    status = failover_controller.promote_standby()
-    await event_bus.publish("server_failover", status)
-    return status
-
-
-@router.post("/api/failover/restore")
-# Restores the logical primary server after a failover demonstration.
-async def restore_primary():
-    status = failover_controller.restore_primary()
-    await event_bus.publish("server_restored", status)
-    return status
+    return node_status.health()

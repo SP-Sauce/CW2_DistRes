@@ -36,6 +36,34 @@ def init_db() -> None:
             "last_seen TEXT NOT NULL"
             ")"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS resource_locks ("
+            "resource_name TEXT PRIMARY KEY, "
+            "active_writer TEXT, "
+            "lock_token TEXT, "
+            "owner_server TEXT, "
+            "acquired_at TEXT, "
+            "expires_at TEXT, "
+            "version INTEGER NOT NULL DEFAULT 0"
+            ")"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO resource_locks("
+            "resource_name, active_writer, lock_token, owner_server, acquired_at, expires_at, version"
+            ") VALUES (?, NULL, NULL, NULL, NULL, NULL, 0)",
+            ("ProductSpecification.txt",),
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS resource_readers ("
+            "resource_name TEXT NOT NULL, "
+            "username TEXT NOT NULL, "
+            "owner_server TEXT, "
+            "started_at TEXT NOT NULL, "
+            "last_seen TEXT NOT NULL, "
+            "expires_at TEXT NOT NULL, "
+            "PRIMARY KEY (resource_name, username)"
+            ")"
+        )
         session_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
         }

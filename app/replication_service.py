@@ -8,7 +8,7 @@ from typing import Any
 from .config import BACKUP_DIR, DB_PATH, PRODUCT_FILE_PATH, REPLICATION_TARGET
 
 
-# Replicates active server state to the standby and keeps local backup snapshots.
+# Keeps backup snapshots and optionally replicates state when a target is configured.
 class ReplicationService:
     # Copies the database and product specification file into the backup store.
     def snapshot(self) -> dict:
@@ -27,7 +27,7 @@ class ReplicationService:
             "file_backup": str(file_backup),
         }
 
-    # Sends the current resource/session state to the standby node over HTTP.
+    # Sends current state to a configured target over HTTP; Model A normally uses snapshots only.
     def replicate_state(
         self,
         *,
