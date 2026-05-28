@@ -27,6 +27,7 @@ NODE3_URL = os.environ.get("DISTRES_NODE3_URL", "http://127.0.0.1:8003").rstrip(
 
 HEALTH_TIMEOUT = float(os.environ.get("DISTRES_HEALTH_TIMEOUT", "1.2"))
 REQUEST_TIMEOUT = float(os.environ.get("DISTRES_REQUEST_TIMEOUT", "8"))
+SSE_TIMEOUT = float(os.environ.get("DISTRES_SSE_TIMEOUT", "30"))
 
 CLUSTER_NODES = [
     {
@@ -127,6 +128,8 @@ class ModelAGateway:
             "cluster_health": health,
             "leader": leader_name,
             "leader_url": leader_url,
+            "selected_backend": active_name,
+            "selected_url": active_url,
             "active_backend": active_name,
             "active_url": active_url,
             "last_election": last_election,
@@ -461,7 +464,7 @@ async def proxy_events(request: Request):
                 upstream = await asyncio.to_thread(
                     urllib.request.urlopen,
                     upstream_request,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=SSE_TIMEOUT,
                 )
                 while True:
                     line = await asyncio.to_thread(upstream.readline)

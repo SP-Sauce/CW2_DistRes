@@ -21,11 +21,24 @@ GATEWAY_HEADER_VALUE = "active-active-read-scaling-leader-election"
 
 # Looks up the current session from a tab token first, then from the fallback cookie.
 def current_user(session_token: str | None, cookie_session: str | None = None):
-    session = session_manager.get(session_token or cookie_session)
+    session, _ = _current_session_from_tokens(session_token, cookie_session)
     if not session:
         raise HTTPException(status_code=401, detail="Not logged in")
-    session_manager.touch(session.session_id)
     return session
+
+
+def _current_session_from_tokens(*tokens: str | None):
+    seen = set()
+    for token in tokens:
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        session = session_manager.get(token)
+        if session:
+            session_manager.touch(session.session_id)
+            return session, session.session_id
+    return None, None
+
 
 def _is_leader_routed_write(
     x_distres_gateway: str | None,
@@ -76,7 +89,14 @@ async def login(
 
     session = session_manager.create_session(username)
     if not session:
-        return RedirectResponse("/?error=User is already connected on another client node", status_code=303)
+        # Browser restarts can lose the session token while SQLite still has the user marked active.
+        # A fresh valid login by the same username takes over that abandoned session.
+        resource_service.finish_read(username)
+        resource_service.finish_write(username)
+        session_manager.remove_user(username)
+        session = session_manager.create_session(username)
+        if not session:
+            return RedirectResponse("/?error=Could not create a fresh session", status_code=303)
 
     query = urlencode({"session_id": session.session_id})
     response = RedirectResponse(f"/dashboard?{query}", status_code=303)
@@ -96,8 +116,8 @@ async def logout(
     distres_session: str | None = Cookie(default=None),
 ):
     ensure_leader_routed_write(x_distres_gateway, x_distres_routing_policy)
-    session_token = session_id or x_distres_session or distres_session
-    username = session_manager.remove(session_token)
+    session, valid_token = _current_session_from_tokens(session_id, x_distres_session, distres_session)
+    username = session_manager.remove(valid_token or session_id or x_distres_session or distres_session)
     if username:
         # Release any read/write locks owned by the logging-out user.
         resource_service.finish_read(username)
@@ -117,16 +137,18 @@ async def dashboard(
     session_id: str | None = Query(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    session_token = session_id or distres_session
-    session = session_manager.get(session_token)
+    session, valid_token = _current_session_from_tokens(session_id, distres_session)
     if not session:
-        return RedirectResponse("/", status_code=303)
-    session_manager.touch(session.session_id)
-    return templates.TemplateResponse(
+        response = RedirectResponse("/", status_code=303)
+        response.delete_cookie("distres_session")
+        return response
+    response = templates.TemplateResponse(
         request,
         "dashboard.html",
-        {"username": session.username, "session_token": session_token},
+        {"username": session.username, "session_token": valid_token},
     )
+    response.set_cookie("distres_session", valid_token, httponly=True, samesite="lax")
+    return response
 
 
 @router.get("/api/state")
@@ -135,9 +157,7 @@ async def state(
     x_distres_session: str | None = Header(default=None),
     distres_session: str | None = Cookie(default=None),
 ):
-    session_token = x_distres_session or distres_session
-    session_manager.touch(session_token)
-    session = session_manager.get(session_token)
+    session, _ = _current_session_from_tokens(x_distres_session, distres_session)
     if session:
         resource_service.touch_read(session.username)
     return JSONResponse(_state_payload())

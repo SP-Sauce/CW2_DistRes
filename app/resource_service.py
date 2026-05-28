@@ -51,7 +51,7 @@ class ResourceAccessService:
         return {
             "active_readers": distributed_read_status["active_readers"],
             "active_writer": distributed_status["active_writer"],
-            "waiting_writers": [],
+            "waiting_writers": distributed_status["waiting_writers"],
             "read_count": distributed_read_status["reader_count"],
             "distributed_readers": distributed_read_status,
             "distributed_write_lock": distributed_status,

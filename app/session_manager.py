@@ -92,6 +92,14 @@ class SessionManager:
                 conn.commit()
         return row["username"] if row else None
 
+    # Removes all sessions for one username, used when a browser restart loses its token.
+    def remove_user(self, username: str) -> int:
+        with self._lock:
+            with get_connection() as conn:
+                cursor = conn.execute("DELETE FROM sessions WHERE username = ?", (username,))
+                conn.commit()
+                return cursor.rowcount
+
     # Checks whether a username already owns an active client session.
     def is_user_active(self, username: str) -> bool:
         with self._lock:

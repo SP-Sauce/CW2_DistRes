@@ -158,9 +158,19 @@ async function startRead() {
 }
 
 async function finishRead() {
+  const draft = document.getElementById("file-content").value;
+  const keepDraft = Boolean(currentLockToken);
   const data = await safeFetch("/api/read/finish", {method: "POST"});
-  document.getElementById("resource-message").textContent = "Read session released.";
-  document.getElementById("file-content").value = "";
+  const stillWriting = data.state?.distributed_write_lock?.active_writer === username;
+  document.getElementById("resource-message").textContent =
+    keepDraft || stillWriting
+      ? "Read session released. Write draft kept because you own the write lock."
+      : "Read session released.";
+  if (keepDraft || stillWriting) {
+    document.getElementById("file-content").value = draft;
+  } else {
+    document.getElementById("file-content").value = "";
+  }
   renderState(data.state);
 }
 
@@ -209,7 +219,7 @@ async function checkGateway() {
     document.getElementById("cluster-health").textContent = health || "unknown";
     document.getElementById("last-election").textContent =
       data.last_election ? `${data.last_election.winner} at ${data.last_election.timestamp}` : "None";
-    addEventLine(`gateway: leader=${data.leader}, active=${data.active_backend}, health=[${health}]`);
+    addEventLine(`gateway: leader=${data.leader}, selected=${data.selected_backend || data.active_backend}, health=[${health}]`);
   } catch (err) {
     addEventLine(`Gateway status unavailable from this URL (${err.message})`);
   }

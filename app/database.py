@@ -64,6 +64,18 @@ def init_db() -> None:
             "PRIMARY KEY (resource_name, username)"
             ")"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS resource_write_waiters ("
+            "resource_name TEXT NOT NULL, "
+            "username TEXT NOT NULL, "
+            "owner_server TEXT, "
+            "requested_at TEXT NOT NULL, "
+            "last_seen TEXT NOT NULL, "
+            "expires_at TEXT NOT NULL, "
+            "reason TEXT, "
+            "PRIMARY KEY (resource_name, username)"
+            ")"
+        )
         session_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
         }

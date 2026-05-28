@@ -24,6 +24,9 @@ DISTRIBUTED_LOCK_LEASE_SECONDS = int(
 DISTRIBUTED_READ_LEASE_SECONDS = int(
     os.environ.get("DISTRIBUTED_READ_LEASE_SECONDS", "120")
 )
+DISTRIBUTED_WRITE_WAIT_LEASE_SECONDS = int(
+    os.environ.get("DISTRIBUTED_WRITE_WAIT_LEASE_SECONDS", "120")
+)
 
 # The simple coursework credential set requested.
 DEFAULT_USERS = {

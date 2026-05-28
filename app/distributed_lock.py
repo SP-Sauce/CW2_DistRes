@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from .config import DISTRIBUTED_LOCK_LEASE_SECONDS
+from .config import DISTRIBUTED_LOCK_LEASE_SECONDS, DISTRIBUTED_WRITE_WAIT_LEASE_SECONDS
 from .database import get_connection
 
 
@@ -15,20 +15,24 @@ class DistributedWriteLock:
     def __init__(self, resource_name: str = RESOURCE_NAME) -> None:
         self.resource_name = resource_name
         self.lease_seconds = DISTRIBUTED_LOCK_LEASE_SECONDS
+        self.wait_lease_seconds = DISTRIBUTED_WRITE_WAIT_LEASE_SECONDS
 
     # Atomically grants the write lease if the resource is free or the old lease expired.
     def request_write(self, username: str, server_id: str) -> tuple[str, str, str | None]:
         now = _utc_now()
         expires_at = now + timedelta(seconds=self.lease_seconds)
+        waiter_expires_at = now + timedelta(seconds=self.wait_lease_seconds)
 
         with get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._clear_expired_waiters(conn, now)
             row = self._lock_row(conn)
             if self._is_expired(row, now):
                 self._clear_lock(conn)
                 row = self._lock_row(conn)
 
             if row["active_writer"] == username:
+                self._remove_waiter(conn, username)
                 conn.commit()
                 return (
                     "ACTIVE",
@@ -37,6 +41,14 @@ class DistributedWriteLock:
                 )
 
             if row["active_writer"]:
+                self._upsert_waiter(
+                    conn,
+                    username,
+                    server_id,
+                    now,
+                    waiter_expires_at,
+                    f"Waiting for {row['active_writer']} to release the write lock.",
+                )
                 conn.commit()
                 return (
                     "WAITING",
@@ -47,10 +59,36 @@ class DistributedWriteLock:
             self._clear_expired_readers(conn, now)
             active_readers = self._active_readers(conn, username)
             if active_readers:
+                self._upsert_waiter(
+                    conn,
+                    username,
+                    server_id,
+                    now,
+                    waiter_expires_at,
+                    f"Waiting for active readers: {', '.join(active_readers)}.",
+                )
                 conn.commit()
                 return (
                     "WAITING",
                     f"Blocked: active readers are still reading: {', '.join(active_readers)}.",
+                    None,
+                )
+
+            waiters = self._waiting_rows(conn)
+            if waiters and waiters[0]["username"] != username:
+                first_waiter = waiters[0]["username"]
+                self._upsert_waiter(
+                    conn,
+                    username,
+                    server_id,
+                    now,
+                    waiter_expires_at,
+                    f"Waiting behind {first_waiter} in the write queue.",
+                )
+                conn.commit()
+                return (
+                    "WAITING",
+                    f"Blocked: {first_waiter} is first in the distributed write queue.",
                     None,
                 )
 
@@ -69,6 +107,7 @@ class DistributedWriteLock:
                     self.resource_name,
                 ),
             )
+            self._remove_waiter(conn, username)
             conn.commit()
             return (
                 "GRANTED",
@@ -86,6 +125,7 @@ class DistributedWriteLock:
                 conn.commit()
                 return False
             self._clear_lock(conn)
+            self._remove_waiter(conn, username)
             conn.commit()
             return True
 
@@ -121,7 +161,22 @@ class DistributedWriteLock:
     def current_status(self) -> dict:
         now = _utc_now()
         with get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._clear_expired_waiters(conn, now)
             row = self._lock_row(conn)
+            waiters = self._waiting_rows(conn)
+            conn.commit()
+        waiting_writers = [
+            {
+                "username": row["username"],
+                "owner_server": row["owner_server"],
+                "requested_at": row["requested_at"],
+                "last_seen": row["last_seen"],
+                "expires_at": row["expires_at"],
+                "reason": row["reason"],
+            }
+            for row in waiters
+        ]
         return {
             "resource_name": row["resource_name"],
             "active_writer": row["active_writer"],
@@ -130,6 +185,9 @@ class DistributedWriteLock:
             "expires_at": row["expires_at"],
             "version": row["version"],
             "is_expired": self._is_expired(row, now),
+            "waiting_writers": [writer["username"] for writer in waiting_writers],
+            "waiting_count": len(waiting_writers),
+            "write_waiters": waiting_writers,
             "lock_mode": "database-backed distributed write lock",
         }
 
@@ -176,6 +234,60 @@ class DistributedWriteLock:
     def _clear_expired_readers(self, conn: sqlite3.Connection, now: datetime) -> None:
         conn.execute(
             "DELETE FROM resource_readers WHERE resource_name = ? AND expires_at <= ?",
+            (self.resource_name, _format_dt(now)),
+        )
+
+    def _waiting_rows(self, conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        return conn.execute(
+            "SELECT username, owner_server, requested_at, last_seen, expires_at, reason "
+            "FROM resource_write_waiters WHERE resource_name = ? ORDER BY requested_at",
+            (self.resource_name,),
+        ).fetchall()
+
+    def _upsert_waiter(
+        self,
+        conn: sqlite3.Connection,
+        username: str,
+        server_id: str,
+        now: datetime,
+        expires_at: datetime,
+        reason: str,
+    ) -> None:
+        existing = conn.execute(
+            "SELECT requested_at FROM resource_write_waiters "
+            "WHERE resource_name = ? AND username = ?",
+            (self.resource_name, username),
+        ).fetchone()
+        requested_at = existing["requested_at"] if existing else _format_dt(now)
+        conn.execute(
+            "INSERT INTO resource_write_waiters("
+            "resource_name, username, owner_server, requested_at, last_seen, expires_at, reason"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(resource_name, username) DO UPDATE SET "
+            "owner_server = excluded.owner_server, "
+            "last_seen = excluded.last_seen, "
+            "expires_at = excluded.expires_at, "
+            "reason = excluded.reason",
+            (
+                self.resource_name,
+                username,
+                server_id,
+                requested_at,
+                _format_dt(now),
+                _format_dt(expires_at),
+                reason,
+            ),
+        )
+
+    def _remove_waiter(self, conn: sqlite3.Connection, username: str) -> None:
+        conn.execute(
+            "DELETE FROM resource_write_waiters WHERE resource_name = ? AND username = ?",
+            (self.resource_name, username),
+        )
+
+    def _clear_expired_waiters(self, conn: sqlite3.Connection, now: datetime) -> None:
+        conn.execute(
+            "DELETE FROM resource_write_waiters WHERE resource_name = ? AND expires_at <= ?",
             (self.resource_name, _format_dt(now)),
         )
 
