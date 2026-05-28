@@ -5,6 +5,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from typing import Iterable
 
 from fastapi import FastAPI, Request
@@ -15,6 +16,19 @@ PRIMARY_URL = os.environ.get("DISTRES_PRIMARY_URL", "http://127.0.0.1:8001").rst
 STANDBY_URL = os.environ.get("DISTRES_STANDBY_URL", "http://127.0.0.1:8002").rstrip("/")
 HEALTH_TIMEOUT = float(os.environ.get("DISTRES_HEALTH_TIMEOUT", "1.2"))
 REQUEST_TIMEOUT = float(os.environ.get("DISTRES_REQUEST_TIMEOUT", "8"))
+
+CLUSTER_NODES = [
+    {
+        "name": "primary",
+        "url": PRIMARY_URL,
+        "priority": 2,
+    },
+    {
+        "name": "standby",
+        "url": STANDBY_URL,
+        "priority": 1,
+    },
+]
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -41,6 +55,9 @@ class FailoverGateway:
         self.standby_url = standby_url
         self._active_url = primary_url
         self._active_name = "primary"
+        self._leader_url = primary_url
+        self._leader_name = "primary"
+        self._last_election = None
         self._standby_promoted = False
         self._lock = threading.Lock()
 
@@ -51,10 +68,25 @@ class FailoverGateway:
         with self._lock:
             active_name = self._active_name
             active_url = self._active_url
+            leader_name = self._leader_name
+            leader_url = self._leader_url
+            last_election = self._last_election
             standby_promoted = self._standby_promoted
         return {
             "active_backend": active_name,
             "active_url": active_url,
+            "leader": leader_name,
+            "leader_url": leader_url,
+            "last_election": last_election,
+            "leader_election_algorithm": "Simplified Bully Algorithm",
+            "cluster_nodes": [
+                {
+                    "name": node["name"],
+                    "url": node["url"],
+                    "priority": node["priority"],
+                }
+                for node in CLUSTER_NODES
+            ],
             "primary_url": self.primary_url,
             "standby_url": self.standby_url,
             "primary_health": primary_health,
@@ -62,44 +94,98 @@ class FailoverGateway:
             "standby_promoted": standby_promoted,
         }
 
-    # Chooses the backend for the next client request and promotes standby if needed.
+    # Runs a simplified Bully election and makes the highest-priority healthy node leader.
+    def run_bully_election(self, reason: str = "manual") -> dict:
+        candidates = []
+        unavailable_nodes = []
+
+        for node in CLUSTER_NODES:
+            health = self._health(node["url"])
+            election_node = {
+                "name": node["name"],
+                "url": node["url"],
+                "priority": node["priority"],
+                "health": health,
+            }
+            if health.get("ok", False):
+                candidates.append(election_node)
+            else:
+                unavailable_nodes.append(election_node)
+
+        if not candidates:
+            raise BackendUnavailable("Election failed: no healthy nodes responded.")
+
+        winner = max(candidates, key=lambda node: node["priority"])
+
+        with self._lock:
+            previous_active_name = self._active_name
+
+        if winner["name"] == "standby":
+            self._promote_standby()
+        else:
+            standby_healthy = self._is_healthy(self.standby_url)
+            if previous_active_name == "standby" and standby_healthy:
+                if not self._sync_state(self.standby_url, self.primary_url):
+                    raise BackendUnavailable(
+                        "Election failed: primary won but standby state could not be synced back."
+                    )
+            if standby_healthy:
+                self._demote_standby()
+
+        election_result = {
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "winner": winner["name"],
+            "winner_url": winner["url"],
+            "winner_priority": winner["priority"],
+            "candidates": [
+                {
+                    "name": candidate["name"],
+                    "priority": candidate["priority"],
+                    "healthy": True,
+                }
+                for candidate in candidates
+            ],
+            "unavailable_nodes": [
+                {
+                    "name": node["name"],
+                    "priority": node["priority"],
+                    "healthy": False,
+                    "error": node["health"].get("error"),
+                }
+                for node in unavailable_nodes
+            ],
+        }
+
+        with self._lock:
+            self._active_name = winner["name"]
+            self._active_url = winner["url"]
+            self._leader_name = winner["name"]
+            self._leader_url = winner["url"]
+            self._standby_promoted = winner["name"] == "standby"
+            self._last_election = election_result
+
+        return election_result
+
+    # Chooses the backend for the next client request and starts election if the leader fails.
     def choose_backend(self) -> tuple[str, str]:
         with self._lock:
             active_name = self._active_name
             active_url = self._active_url
+            standby_promoted = self._standby_promoted
 
-        if active_name == "standby":
-            standby_ok = self._is_healthy(active_url)
-            primary_ok = self._is_healthy(self.primary_url)
-            if primary_ok:
-                if standby_ok and not self._sync_state(self.standby_url, self.primary_url):
-                    return active_name, active_url
-                if standby_ok:
-                    self._demote_standby()
-                with self._lock:
-                    self._active_name = "primary"
-                    self._active_url = self.primary_url
-                    self._standby_promoted = False
-                    return self._active_name, self._active_url
-            if standby_ok:
+        active_healthy = self._is_healthy(active_url)
+        if active_healthy:
+            if active_name != "standby" or standby_promoted:
                 return active_name, active_url
+            election_reason = "standby selected after failed primary request"
+        else:
+            election_reason = f"{active_name} failed health check"
 
-        if self._is_healthy(self.primary_url):
-            with self._lock:
-                self._active_name = "primary"
-                self._active_url = self.primary_url
-                self._standby_promoted = False
-                return self._active_name, self._active_url
+        self.run_bully_election(reason=election_reason)
 
-        if self._is_healthy(self.standby_url):
-            self._promote_standby()
-            with self._lock:
-                self._active_name = "standby"
-                self._active_url = self.standby_url
-                self._standby_promoted = True
-                return self._active_name, self._active_url
-
-        raise BackendUnavailable("Neither primary nor standby server is healthy.")
+        with self._lock:
+            return self._active_name, self._active_url
 
     # Moves traffic away from a failed primary so the next request checks standby first.
     def mark_failed(self, backend_url: str) -> None:
@@ -271,23 +357,48 @@ async def gateway_status():
     return gateway.status()
 
 
+@app.get("/gateway/election")
+# Shows the current leader-election view without changing the active backend.
+async def gateway_election_status():
+    return {
+        "ok": True,
+        "algorithm": "Simplified Bully Algorithm",
+        "gateway": gateway.status(),
+    }
+
+
+@app.post("/gateway/election")
+# Manually runs the Bully election so the highest-priority healthy node becomes leader.
+async def gateway_election():
+    try:
+        result = gateway.run_bully_election(reason="manual election requested")
+        return {
+            "ok": True,
+            "algorithm": "Simplified Bully Algorithm",
+            "election": result,
+            "gateway": gateway.status(),
+        }
+    except (BackendUnavailable, urllib.error.URLError, TimeoutError) as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "algorithm": "Simplified Bully Algorithm",
+                "detail": str(exc),
+            },
+            status_code=503,
+        )
+
+
 @app.post("/gateway/reset-primary")
 # Resets the gateway preference back to primary after manually restarting it.
 async def reset_primary():
     if not gateway._is_healthy(PRIMARY_URL):
         return JSONResponse({"detail": "Primary is not healthy."}, status_code=503)
-    if gateway._is_healthy(STANDBY_URL):
-        if not gateway._sync_state(STANDBY_URL, PRIMARY_URL):
-            return JSONResponse(
-                {"detail": "Could not sync standby state back to primary."},
-                status_code=502,
-            )
-        gateway._demote_standby()
-    with gateway._lock:
-        gateway._active_name = "primary"
-        gateway._active_url = PRIMARY_URL
-        gateway._standby_promoted = False
-    return gateway.status()
+    try:
+        gateway.run_bully_election(reason="manual primary reset requested")
+        return gateway.status()
+    except (BackendUnavailable, urllib.error.URLError, TimeoutError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=503)
 
 
 @app.get("/events")
