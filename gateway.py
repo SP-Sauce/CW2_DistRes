@@ -31,19 +31,13 @@ SSE_TIMEOUT = float(os.environ.get("DISTRES_SSE_TIMEOUT", "30"))
 
 CLUSTER_NODES = [
     {
-        "name": "node1",
-        "url": NODE1_URL,
-        "priority": 3,
+        "name": "node1","url": NODE1_URL,"priority": 3,
     },
     {
-        "name": "node2",
-        "url": NODE2_URL,
-        "priority": 2,
+        "name": "node2","url": NODE2_URL,"priority": 2,
     },
     {
-        "name": "node3",
-        "url": NODE3_URL,
-        "priority": 1,
+        "name": "node3","url": NODE3_URL,"priority": 1,
     },
 ]
 
@@ -196,7 +190,7 @@ class ModelAGateway:
 
         return election_result
 
-    # Chooses a backend using Model A routing: load-balanced reads, leader-routed writes.
+    # Chooses a backend using routing: load-balanced reads, leader-routed writes.
     def choose_backend(self, path: str, method: str) -> tuple[str, str, str]:
         normalised_path = _normalise_path(path)
         method = method.upper()
