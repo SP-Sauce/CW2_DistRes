@@ -176,47 +176,6 @@ GET  /events
 | Browser restart recovery | `app/routes.py`, `app/session_manager.py` | A same-user login clears abandoned session/lock state and creates a fresh session. |
 | Failure handling | `gateway.py`, dashboard retry logic | Gateway health checks, retries, and elections keep routing available. |
 | Server-hosted database/file | `app/database.py`, `app/config.py` | SQLite and `ProductSpecification.txt` are created under the data directory. |
-
-## Demo Checklist
-
-Demo 1 - Load-balanced reads:
-
-- Start node1, node2, node3, and gateway.
-- Open `http://127.0.0.1:8000`.
-- Call `/gateway/status` and show all healthy nodes.
-- Refresh dashboard/state and show safe requests route across healthy nodes.
-
-Demo 2 - Bully election:
-
-- Show node1 is leader because priority 3.
-- Stop node1.
-- Trigger `POST /gateway/election`.
-- Show node2 becomes leader because it is now the highest-priority healthy node.
-- Stop node2 and show node3 becomes leader.
-- Restart node1, trigger election, and show node1 becomes leader again.
-
-Demo 3 - Distributed write lock:
-
-- Login with two clients.
-- Client A requests write access and receives the distributed write lock.
-- Client B requests write access and is blocked or waiting.
-- Client A saves and releases.
-- Client B requests write access again and can proceed.
-- Show the distributed write lock owner in the dashboard or `/api/state`.
-
-Demo 4 - Pub-sub:
-
-- Keep multiple clients open.
-- Save a write update.
-- Show the `file_updated` event appears across clients.
-
-Demo 5 - Failure handling:
-
-- Stop one non-leader node.
-- Reads continue through other healthy nodes.
-- Stop the leader node.
-- The gateway runs election and routes writes to the new leader.
-
 ## Notes
 
 The distributed write lock is a final consistency guard. It does not mean every server should independently accept writes. Write requests must be routed through the gateway to the Bully-elected leader first, then checked by the DB-backed distributed lock.
